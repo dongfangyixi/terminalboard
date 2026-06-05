@@ -13,12 +13,34 @@ from typing import Dict, List, Optional, Sequence
 
 from .model import Run, ScalarSeries
 
-# A small, readable palette reused across runs/overlays.
-_PALETTE = ["cyan", "green", "magenta", "yellow", "blue", "red", "white"]
+# A small, readable palette reused across runs/overlays. Each entry pairs a
+# plotext color name (for the curve) with the matching ANSI SGR code (for the
+# run legend we draw ourselves in the header).
+_RUN_STYLES = [
+    ("cyan", "36"), ("green", "32"), ("magenta", "35"), ("yellow", "33"),
+    ("blue", "34"), ("red", "31"), ("white", "37"),
+]
+_PALETTE = [name for name, _ in _RUN_STYLES]
 _HEX_PALETTE = [
     "#4FC3F7", "#81C784", "#BA68C8", "#FFD54F",
     "#64B5F6", "#E57373", "#A1887F", "#4DB6AC",
 ]
+
+
+def run_legend(run_order, width: int) -> str:
+    """A single colored line mapping each run to its curve color.
+
+    We render this ourselves instead of using plotext's per-panel legend, which
+    leaks state across repeated build() calls (accumulating/duplicating, and
+    eventually crashing) and overlaps the plotted data.
+    """
+    parts = []
+    budget = max(10, width // max(1, len(run_order)) - 4)
+    for i, name in enumerate(run_order):
+        code = _RUN_STYLES[i % len(_RUN_STYLES)][1]
+        label = name if len(name) <= budget else "…" + name[-(budget - 1):]
+        parts.append(f"\033[{code}m──\033[0m {label}")
+    return "  " + "   ".join(parts)
 
 
 def ema(values: Sequence[float], alpha: float) -> List[float]:
@@ -126,16 +148,21 @@ class TextRenderer(Renderer):
             width = width or tw
             height = height or max(4, th - 2)
 
+        # One stable color per run, consistent across every panel.
+        run_order = sorted(runs.keys())
+        run_color = {name: i for i, name in enumerate(run_order)}
+        multi_run = len(run_order) > 1
+        legend_rows = 1 if multi_run else 0
+
         rows, cols = grid_dims(len(tags), max_cols)
         plt.subplots(rows, cols)
-        multi_run = len(runs) > 1
 
         # Size EVERY panel (including empty trailing cells on a partial page) so
         # all panels in a row share dimensions — plotext crashes when joining a
         # row of mismatched-height matrices. plotext adds ~1 separator row, so
-        # total height ≈ rows * panel_h + 1.
+        # total height ≈ rows * panel_h + 1; reserve a row for the run legend.
         panel_w = max(20, width // cols)
-        panel_h = max(5, (height - 1) // rows)
+        panel_h = max(5, (height - 1 - legend_rows) // rows)
         title_max = max(6, panel_w - 9)  # reserve room for y-axis labels
 
         for r in range(rows):
@@ -147,16 +174,30 @@ class TextRenderer(Renderer):
                 if idx >= len(tags):
                     continue  # empty cell: sized but left blank
                 tag = tags[idx]
-                for j, (run_name, s) in enumerate(series_for_tag(runs, tag)):
+                vmin = vmax = None
+                for run_name, s in series_for_tag(runs, tag):
                     xs, ys = subsample(
                         s.steps, ema(s.values, smooth), self.max_points
                     )
-                    color = _PALETTE[j % len(_PALETTE)]
-                    label = run_name if multi_run else None
-                    sp.plot(xs, ys, marker=self.marker, color=color, label=label)
+                    color = _PALETTE[run_color[run_name] % len(_PALETTE)]
+                    # No label= here: we draw the run legend ourselves (see
+                    # run_legend) to avoid plotext's leaky per-panel legend.
+                    sp.plot(xs, ys, marker=self.marker, color=color)
+                    if ys:
+                        lo, hi = min(ys), max(ys)
+                        vmin = lo if vmin is None else min(vmin, lo)
+                        vmax = hi if vmax is None else max(vmax, hi)
+                # A flat (or near-flat) series gives plotext a zero-height axis,
+                # whose tick computation can spin forever. Force a real y-range.
+                if vmin is not None and (vmax - vmin) <= abs(vmin) * 1e-9 + 1e-12:
+                    pad = abs(vmin) * 0.5 or 1.0
+                    sp.ylim(vmin - pad, vmax + pad)
                 sp.title(shorten_tag(tag, title_max))
 
-        return plt.build()
+        plot = plt.build()
+        if multi_run:
+            return run_legend(run_order, width) + "\n" + plot
+        return plot
 
 
 class ImageRenderer(Renderer):

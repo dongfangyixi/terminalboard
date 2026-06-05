@@ -123,6 +123,11 @@ Filters match per comma-separated token: a plain word is a case-insensitive
 (`train/*loss*`). The plots re-filter as you type. Tag and experiment filters
 combine — a tag only shows if a currently-visible experiment has it.
 
+In the filter prompt: **←/→** move the cursor, **↑/↓** recall previous patterns,
+**Home/End** (or `^A`/`^E`) jump, `^U` clears. If a pattern matches nothing the
+current plots are **kept** (no jarring re-layout) and a red warning is shown
+until you fix or cancel it.
+
 ### Example (text renderer)
 
 ```

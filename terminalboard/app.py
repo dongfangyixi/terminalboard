@@ -62,6 +62,8 @@ class App:
         # Stable color index per run: assigned once and never reshuffled, so an
         # experiment keeps its color regardless of filtering or new runs.
         self._run_color_index: dict = {}
+        # Per-kind history of applied filter patterns (recalled with up/down).
+        self._filter_history = {"tags": [], "runs": []}
         self.interval = interval
         self.page = 0
         # Start at the ladder rung closest to the requested grid's panel count.
@@ -127,16 +129,60 @@ class App:
             f"[+/-] smooth  [z/Z] zoom ({per_page}/pg)  [r]efresh\033[0m"
         )
 
-    def _prompt_footer(self, label: str, text: str, kind: str) -> str:
-        if kind == "tags":
-            n, unit = len(self._matching_tags()), "tags"
+    def _prompt_footer(self, label: str, text: str, pos: int, kind: str,
+                       warn: bool) -> str:
+        # Draw the input with a reverse-video block cursor at ``pos``.
+        if pos < len(text):
+            shown = text[:pos] + "\033[7m" + text[pos] + "\033[0m" + text[pos + 1:]
         else:
-            n, unit = len(self._visible_runs()), "experiments"
-        cursor = "\033[7m \033[0m"  # reverse-video block as a cursor
-        return (
-            f"\033[1m{label}>\033[0m {text}{cursor}  "
-            f"\033[2m({n} {unit} · Enter=apply  Esc=cancel  ^U=clear)\033[0m"
-        )
+            shown = text + "\033[7m \033[0m"
+        if warn:
+            status = "\033[1;31m✗ no matches — pattern not applied\033[0m"
+        else:
+            if kind == "tags":
+                n, unit = len(self._matching_tags()), "tags"
+            else:
+                n, unit = len(self._visible_runs()), "experiments"
+            status = (f"\033[2m({n} {unit} · ←→ move · ↑↓ history · "
+                      f"Enter apply · Esc cancel)\033[0m")
+        return f"\033[1m{label}>\033[0m {shown}  {status}"
+
+    def _count_matches(self, kind: str, value) -> int:
+        if kind == "runs":
+            return sum(1 for n in self.reader.runs if match_filter(value, n))
+        tags = {t for run in self._visible_runs().values() for t in run.series}
+        return sum(1 for t in tags if match_filter(value, t))
+
+    def _read_edit_key(self, keys, timeout):
+        """Read one keypress, decoding arrow/nav escape sequences to tokens.
+
+        Returns a token (UP/DOWN/LEFT/RIGHT/HOME/END/DEL/ESC/IGNORE) for escape
+        sequences, or the raw character otherwise. Handles both CSI (ESC ``[``)
+        and SS3 (ESC ``O``, sent in application-cursor mode on the alt screen).
+        """
+        ch = keys.get(timeout)
+        if ch is None or ch != "\x1b":
+            return ch
+        b2 = keys.get(0.05)
+        if b2 is None or b2 not in ("[", "O"):
+            return "ESC"  # a lone Esc (or Alt-combo we don't use)
+        b3 = keys.get(0.05)
+        if b3 is None:
+            return "ESC"
+        final = {"A": "UP", "B": "DOWN", "C": "RIGHT", "D": "LEFT",
+                 "H": "HOME", "F": "END"}
+        if b3 in final:
+            return final[b3]
+        if b3.isdigit():  # e.g. ESC [ 3 ~  (Delete), ESC [ 1 ~ (Home)
+            seq = b3
+            for _ in range(4):
+                b = keys.get(0.05)
+                if b is None or b == "~":
+                    break
+                seq += b
+            return {"3": "DEL", "1": "HOME", "7": "HOME",
+                    "4": "END", "8": "END"}.get(seq, "IGNORE")
+        return "IGNORE"
 
     def _build_frame(self, prompt=None) -> str:
         cols, rows = shutil.get_terminal_size((100, 30))
@@ -229,36 +275,81 @@ class App:
                     deadline = time.monotonic() + self.interval
 
     def _edit_filter(self, screen, keys, kind: str) -> None:
-        """Modal mini line-editor for a tag or experiment filter, with live
-        preview (the dashboard re-filters as you type)."""
+        """Modal line-editor for a tag or experiment filter.
+
+        Live preview (re-filters as you type) — but if a pattern matches nothing
+        the layout is *kept* and a red warning is shown, instead of collapsing to
+        an empty screen and yanking the input box to the top. ←/→ move the
+        cursor, ↑/↓ recall previous patterns.
+        """
         attr = "tag_filter" if kind == "tags" else "run_filter"
         label = "filter tags" if kind == "tags" else "filter experiments"
         original = getattr(self, attr)
+        last_valid = original
         buf = list(original or "")
+        pos = len(buf)
+        hist = self._filter_history[kind]
+        hist_idx = len(hist)   # points one past the end == the live draft
+        draft = None
+
         while True:
-            setattr(self, attr, "".join(buf).strip() or None)  # live preview
-            self.page = 0
-            screen.draw(self._build_frame(prompt=(label, "".join(buf), kind)),
-                        hard=True)
-            ch = keys.get(30)
-            if ch is None:
+            typed = "".join(buf).strip() or None
+            warn = typed is not None and self._count_matches(kind, typed) == 0
+            if not warn:
+                setattr(self, attr, typed)  # commit -> layout updates live
+                last_valid = typed
+                self.page = 0
+            # When warn: keep the last valid filter committed (layout frozen).
+            screen.draw(
+                self._build_frame(prompt=(label, "".join(buf), pos, kind, warn)),
+                hard=True,
+            )
+
+            key = self._read_edit_key(keys, 30)
+            if key is None:
                 continue
-            if ch in ("\r", "\n"):           # apply (already set)
+            if key in ("\r", "\n"):                       # apply last valid
+                setattr(self, attr, last_valid)
+                if last_valid:                            # unique, most-recent-last
+                    if last_valid in hist:
+                        hist.remove(last_valid)
+                    hist.append(last_valid)
                 return
-            if ch == "\x1b":                 # Esc — but distinguish arrow keys
-                nxt = keys.get(0.02)
-                if nxt == "[":
-                    keys.get(0.02)           # swallow the arrow's final byte
-                    continue
-                setattr(self, attr, original)  # cancel: restore
+            if key == "ESC":                              # cancel: restore
+                setattr(self, attr, original)
+                self.page = 0
                 return
-            if ch in ("\x7f", "\b", "\x08"):  # backspace
-                if buf:
-                    buf.pop()
-            elif ch == "\x15":                # Ctrl-U: clear line
-                buf = []
-            elif ch.isprintable():
-                buf.append(ch)
+            if key in ("\x7f", "\b", "\x08"):             # backspace
+                if pos > 0:
+                    del buf[pos - 1]
+                    pos -= 1
+            elif key == "DEL":
+                if pos < len(buf):
+                    del buf[pos]
+            elif key == "LEFT":
+                pos = max(0, pos - 1)
+            elif key == "RIGHT":
+                pos = min(len(buf), pos + 1)
+            elif key in ("HOME", "\x01"):                 # Home / Ctrl-A
+                pos = 0
+            elif key in ("END", "\x05"):                  # End / Ctrl-E
+                pos = len(buf)
+            elif key == "\x15":                           # Ctrl-U: clear
+                buf, pos = [], 0
+            elif key == "UP":
+                if hist and hist_idx > 0:
+                    if hist_idx == len(hist):
+                        draft = list(buf)                 # stash the live draft
+                    hist_idx -= 1
+                    buf, pos = list(hist[hist_idx]), len(hist[hist_idx])
+            elif key == "DOWN":
+                if hist_idx < len(hist):
+                    hist_idx += 1
+                    nxt = hist[hist_idx] if hist_idx < len(hist) else (draft or [])
+                    buf, pos = list(nxt), len(nxt)
+            elif isinstance(key, str) and len(key) == 1 and key.isprintable():
+                buf.insert(pos, key)
+                pos += 1
 
     def _handle_key(self, ch: str) -> bool:
         """Handle a keypress. Return True to quit."""

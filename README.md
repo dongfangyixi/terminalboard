@@ -1,8 +1,8 @@
 # terminalboard
 
 [![CI](https://github.com/dongfangyixi/terminalboard/actions/workflows/ci.yml/badge.svg)](https://github.com/dongfangyixi/terminalboard/actions/workflows/ci.yml)
-[![PyPI version](https://img.shields.io/pypi/v/terminalboard.svg?cacheSeconds=600)](https://pypi.org/project/terminalboard/)
-[![Python versions](https://img.shields.io/pypi/pyversions/terminalboard.svg?cacheSeconds=600)](https://pypi.org/project/terminalboard/)
+[![PyPI version](https://img.shields.io/pypi/v/terminalboard)](https://pypi.org/project/terminalboard/)
+[![Python versions](https://img.shields.io/pypi/pyversions/terminalboard)](https://pypi.org/project/terminalboard/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 A **pure-terminal TensorBoard scalar viewer**.

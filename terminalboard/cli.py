@@ -43,7 +43,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(mode="text")
 
     p.add_argument("--tags", default=None,
-                   help="comma-separated glob(s) to filter tags, e.g. 'train/*loss*'")
+                   help="comma-separated filter for tags, e.g. 'train/*loss*' "
+                        "(also editable live with the 't' key)")
+    p.add_argument("--experiments", "--runs", default=None, dest="experiments",
+                   help="comma-separated filter for experiments/runs "
+                        "(also editable live with the 'f' key)")
     p.add_argument("--smooth", type=float, default=0.6, metavar="ALPHA",
                    help="EMA smoothing weight in [0,1) (default: 0.6; 0 disables)")
     p.add_argument("--grid", type=_parse_grid, default=(2, 3), metavar="RxC",
@@ -93,7 +97,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     rows, cols = args.grid
     app = App(
         reader, renderer,
-        tag_filter=args.tags, smooth=args.smooth,
+        tag_filter=args.tags, run_filter=args.experiments, smooth=args.smooth,
         rows=rows, cols=cols, interval=args.interval,
     )
     try:

@@ -89,7 +89,8 @@ terminalboard LOGDIR [options]
   LOGDIR / --logdir   directory of TensorBoard event files (scanned recursively)
   --light             use the dependency-free pure-Python parser
   --hq / --text/--auto   image / text (default) / auto-detect renderer
-  --tags GLOB         comma-separated glob(s), e.g. 'train/*loss*,val/*'
+  --tags GLOB         filter tags, e.g. 'train/*loss*,val/*' (live-editable: t)
+  --experiments GLOB  filter experiments/runs (live-editable: f)
   --smooth ALPHA      EMA smoothing weight in [0,1) (default: 0.6; 0 disables)
   --grid RxC          panels per page (default: 2x3)
   --interval SECONDS  live refresh interval (default: 2.0)
@@ -110,10 +111,17 @@ terminalboard ../tb_logs --light --once        # one frame, no deps, no loop
 |---|---|
 | `q` | quit |
 | `n` / `space`, `p` | next / previous page of tags |
+| `t` | edit the **tag** filter live (Enter apply · Esc cancel · ^U clear) |
+| `f` | edit the **experiment/run** filter live |
 | `r` | refresh now |
 | `+` / `-` | more / less smoothing |
 | `0` | disable smoothing |
 | `z` / `Z` | zoom out / in — panels per page: `1·2·4·6·9·12·16·24·36` |
+
+Filters match per comma-separated token: a plain word is a case-insensitive
+**substring** (`loss` → `train/loss`, `val/loss`), while `* ? [` make it a glob
+(`train/*loss*`). The plots re-filter as you type. Tag and experiment filters
+combine — a tag only shows if a currently-visible experiment has it.
 
 ### Example (text renderer)
 

@@ -25,6 +25,8 @@ tb = ["tensorboard>=2.9"]
 hq = ["matplotlib>=3.5"]
 # Everything.
 full = ["tensorboard>=2.9", "matplotlib>=3.5"]
+# Development / testing.
+dev = ["pytest>=7", "build", "twine"]
 
 [project.scripts]
 terminalboard = "terminalboard.cli:main"

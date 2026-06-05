@@ -24,12 +24,19 @@ You don't need write access to this repo. The standard flow:
    .venv/bin/terminalboard path/to/tb_logs --once          # text renderer
    .venv/bin/terminalboard path/to/tb_logs --light --once  # pure-Python parser
    ```
-5. **Commit and push** to your fork:
+5. **Run the tests** (CI runs these on every PR):
+   ```bash
+   .venv/bin/pip install -e '.[full,dev]'   # adds pytest + build/twine
+   .venv/bin/pytest -q
+   ```
+   The suite is self-contained — it generates a tiny synthetic event file, so no
+   real logs are needed.
+6. **Commit and push** to your fork:
    ```bash
    git commit -am "Describe your change"
    git push origin my-feature
    ```
-6. **Open a Pull Request** from your branch to `dongfangyixi/terminalboard:main`.
+7. **Open a Pull Request** from your branch to `dongfangyixi/terminalboard:main`.
    Describe what changed and why; link any related issue.
 
 A maintainer reviews, may request changes, then merges. Your commits keep your

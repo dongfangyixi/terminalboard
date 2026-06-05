@@ -2,13 +2,13 @@
 
 A **pure-SSH terminal TensorBoard scalar viewer**.
 
-Train on a remote box, SSH in with iTerm2, and watch your **live-updating scalar
-curves rendered as real images right inside the terminal** — no browser, no X11,
-no port forwarding.
+Train on a remote box, SSH in, and watch your **live-updating scalar curves
+right inside the terminal** — crisp Unicode/braille text by default, or real
+iTerm2 inline images with `--hq`. No browser, no X11, no port forwarding.
 
 ```
 ssh remote
-terminalboard --logdir path/to/tb_logs
+terminalboard path/to/tb_logs
 ```
 
 ---
@@ -24,10 +24,12 @@ is all you need.
 ## How it works
 
 1. **Read** the TensorBoard event files (`events.out.tfevents.*`) from a log
-   directory and collect the scalar series.
-2. **Render** the selected curves with matplotlib into a PNG.
-3. **Display** that PNG inside the terminal using the
-   [iTerm2 inline-image protocol](https://iterm2.com/documentation-images.html).
+   directory (scanned recursively for multiple runs) and collect the scalar series.
+2. **Render** the selected curves — by default as Unicode/braille **text** (works
+   in any terminal), or with `--hq` as a matplotlib PNG.
+3. **Display** them: braille text is printed directly; the `--hq` PNG is streamed
+   via the [iTerm2 inline-image protocol](https://iterm2.com/documentation-images.html)
+   (built in-memory, no temp file).
 4. **Watch** the log directory and re-render whenever new data lands, giving a
    live dashboard. Repaints are **flicker-free**: the alternate screen buffer is
    redrawn in place under synchronized output (DEC mode 2026), and an idle
@@ -74,12 +76,47 @@ The two axes are independent: pick any parser with any renderer.
 
 ## Install
 
+> ⚠️ **Not published to PyPI yet**, so `pip install terminalboard` won't work
+> until it is. Install from source for now.
+
+**From a clone** (recommended for development):
+
+```bash
+git clone https://github.com/dongfangyixi/terminalboard.git
+cd terminalboard
+pip install -e '.[full]'     # editable; full = tensorboard + matplotlib
+```
+
+**Directly from GitHub:**
+
+```bash
+pip install "git+https://github.com/dongfangyixi/terminalboard.git"
+# with extras (default parser + --hq image renderer):
+pip install "terminalboard[full] @ git+https://github.com/dongfangyixi/terminalboard.git"
+```
+
+The base install pulls only `plotext` — enough for the text renderer and the
+dependency-free `--light` parser. Extras add the heavy bits:
+
+| Extra | Adds | Enables |
+|---|---|---|
+| `[tb]` | `tensorboard` | the default (robust) parser |
+| `[hq]` | `matplotlib` | the `--hq` iTerm2 image renderer |
+| `[full]` | both | everything |
+
+<details>
+<summary>Once it's on PyPI</summary>
+
 ```bash
 pip install terminalboard            # text renderer + pure-Python --light parser
 pip install 'terminalboard[tb]'      # + tensorboard (default parser)
 pip install 'terminalboard[hq]'      # + matplotlib (--hq image renderer)
 pip install 'terminalboard[full]'    # everything
 ```
+
+Publishing checklist: `pip install build twine` → `python -m build` →
+`twine upload dist/*` (needs a PyPI account + the name `terminalboard` being free).
+</details>
 
 ## Usage
 
@@ -123,6 +160,14 @@ Filters match per comma-separated token: a plain word is a case-insensitive
 (`train/*loss*`). The plots re-filter as you type. Tag and experiment filters
 combine — a tag only shows if a currently-visible experiment has it.
 
+### Multiple experiments
+
+When a logdir holds several runs, their curves are **overlaid in each panel**,
+each experiment in its own color, with a legend above the grid. Colors are
+**stable** — an experiment keeps its color no matter which others you filter in
+or out — so you can always tell which curve is which. Use `f` (or
+`--experiments`) to focus on a subset.
+
 In the filter prompt: **←/→** move the cursor, **↑/↓** recall previous patterns,
 **Home/End** (or `^A`/`^E`) jump, `^U` clears. If a pattern matches nothing the
 current plots are **kept** (no jarring re-layout) and a red warning is shown
@@ -154,17 +199,21 @@ until you fix or cancel it.
       `ScalarSeries` data model and recursive multi-run logdir scan.
 - [x] **Render — text**: `plotext` braille grid, the default (no image).
 - [x] **Render — `--hq`**: matplotlib grid → in-memory PNG → iTerm2 inline image.
-- [x] **Live loop + CLI**: watch the logdir, refresh on change, keyboard
-      navigation (quit / page / smoothing / grid); argparse front end.
-- [ ] Multi-run overlay legends polish, per-tag y-axis options.
-- [ ] Sixel fallback for non-iTerm2 terminals; config file; tag search UI.
+- [x] **Live loop + CLI**: flicker-free repaints, keyboard navigation; argparse front end.
+- [x] **Zoom** (`z`/`Z`): 1·2·4·6·9·12·16·24·36 panels per page.
+- [x] **Interactive filters** (`t`/`f`): live tag & experiment filtering with a
+      line editor (cursor, history, no-match warning).
+- [x] **Multi-experiment overlay** with stable per-run colors and a legend.
+- [ ] Publish to PyPI.
+- [ ] Sixel fallback for non-iTerm2 terminals; config file; per-tag y-axis options.
 
 ## Status
 
-Working v0.1. Default text dashboard, `--hq` iTerm2 images, `--light` parser, and
-the live interactive loop are all functional. Test event logs are kept in the
-**parent working folder** (e.g. `../tb_logs/`), deliberately outside this
-repository — they're real training data and don't belong in a public repo.
+Working. The default text dashboard, `--hq` iTerm2 images, the `--light` parser,
+multi-experiment overlay, zoom, and live interactive tag/experiment filtering are
+all functional. Test event logs are kept in the **parent working folder** (e.g.
+`../tb_logs/`), deliberately outside this repository — they're real training data
+and don't belong in a public repo.
 
 ## Development
 
@@ -176,4 +225,4 @@ python3 -m venv .venv
 
 ## License
 
-TBD.
+[MIT](LICENSE).

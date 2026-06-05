@@ -67,16 +67,19 @@ def series_for_tag(runs: Dict[str, Run], tag: str) -> List[tuple]:
 class Renderer:
     name = "base"
 
-    def render(
+    def frame(
         self,
         runs: Dict[str, Run],
         tags: List[str],
         *,
         smooth: float = 0.0,
         max_cols: int = 3,
-        header: str = "",
-    ) -> None:  # pragma: no cover - interface
+    ) -> str:  # pragma: no cover - interface
+        """Return the rendered body as a single string (no printing)."""
         raise NotImplementedError
+
+
+_EMPTY_MSG = "\n  (no scalar tags match the current filter yet…)\n"
 
 
 class TextRenderer(Renderer):
@@ -90,14 +93,12 @@ class TextRenderer(Renderer):
         self.marker = marker
         self.max_points = max_points
 
-    def render(self, runs, tags, *, smooth=0.0, max_cols=3, header=""):
+    def frame(self, runs, tags, *, smooth=0.0, max_cols=3) -> str:
         import plotext as plt
 
         plt.clear_figure()
         if not tags:
-            print(header)
-            print("\n  (no scalar tags match the current filter yet…)\n")
-            return
+            return _EMPTY_MSG
 
         rows, cols = grid_dims(len(tags), max_cols)
         plt.subplots(rows, cols)
@@ -115,9 +116,7 @@ class TextRenderer(Renderer):
                 sp.plot(xs, ys, marker=self.marker, color=color, label=label)
             sp.title(tag)
 
-        if header:
-            print(header)
-        plt.show()
+        return plt.build()
 
 
 class ImageRenderer(Renderer):
@@ -129,20 +128,17 @@ class ImageRenderer(Renderer):
         self.dpi = dpi
         self.max_points = max_points
 
-    def render(self, runs, tags, *, smooth=0.0, max_cols=3, header=""):
+    def frame(self, runs, tags, *, smooth=0.0, max_cols=3) -> str:
         import io
 
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
 
-        from .iterm2 import show_image
+        from .iterm2 import image_escape
 
-        if header:
-            print(header)
         if not tags:
-            print("\n  (no scalar tags match the current filter yet…)\n")
-            return
+            return _EMPTY_MSG
 
         rows, cols = grid_dims(len(tags), max_cols)
         plt.style.use("dark_background")
@@ -179,7 +175,9 @@ class ImageRenderer(Renderer):
         buf = io.BytesIO()
         fig.savefig(buf, format="png", facecolor=fig.get_facecolor())
         plt.close(fig)
-        show_image(buf.getvalue())
+        # height in cells keeps the image a stable size across frames, so a
+        # repaint overdraws the previous image cleanly instead of resizing.
+        return image_escape(buf.getvalue(), height=f"{6 * rows}")
 
 
 def make_renderer(mode: str) -> Renderer:

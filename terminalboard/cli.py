@@ -99,8 +99,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         app.run(once=args.once)
     except KeyboardInterrupt:
-        sys.stdout.write("\033[2J\033[3J\033[H")
-        sys.stdout.flush()
+        pass  # Screen's context manager already restored the terminal
     return 0
 
 

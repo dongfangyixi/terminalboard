@@ -9,8 +9,7 @@ from typing import List, Optional
 from .keys import KeyReader
 from .reader import BaseReader
 from .render import Renderer, grid_dims
-
-_CLEAR = "\033[2J\033[3J\033[H"  # clear screen + scrollback + home
+from .screen import Screen
 
 
 class App:
@@ -73,17 +72,34 @@ class App:
             "[+/-] smooth  [g] grid  [0] no-smooth\033[0m"
         )
 
-    def render_once(self) -> None:
-        self.reader.poll()
+    def _build_frame(self) -> str:
         all_tags = self._matching_tags()
         page_tags, n_pages = self._page_tags(all_tags)
-        sys.stdout.write(_CLEAR)
         header = self._header(all_tags, page_tags, n_pages)
-        self.renderer.render(
-            self.reader.runs, page_tags, smooth=self.smooth,
-            max_cols=self.cols, header=header,
+        body = self.renderer.frame(
+            self.reader.runs, page_tags, smooth=self.smooth, max_cols=self.cols,
         )
-        print(self._footer())
+        return f"{header}\n{body}\n{self._footer()}"
+
+    def _signature(self):
+        """Cheap fingerprint of everything that affects the rendered frame.
+
+        Repainting only when this changes is what keeps an idle dashboard from
+        flickering — no new data means no redraw at all.
+        """
+        total = 0
+        last_step = 0
+        for run in self.reader.runs.values():
+            for s in run.series.values():
+                total += len(s)
+                if s.steps:
+                    last_step = max(last_step, s.steps[-1])
+        return (total, last_step, self.page, round(self.smooth, 3),
+                self.rows, self.cols, self.tag_filter, self.renderer.name)
+
+    def render_once(self) -> None:
+        self.reader.poll()
+        print(self._build_frame())
 
     # -- interactive loop ----------------------------------------------------
 
@@ -92,12 +108,17 @@ class App:
             self.render_once()
             return
 
-        with KeyReader() as keys:
+        with Screen() as screen, KeyReader() as keys:
+            last_sig = None
             while True:
-                self.render_once()
-                # Wait for the interval, but react immediately to keypresses.
+                self.reader.poll()
+                sig = self._signature()
+                if sig != last_sig:
+                    screen.draw(self._build_frame())
+                    last_sig = sig
+
+                # Wait out the interval, but react instantly to keypresses.
                 deadline = time.monotonic() + self.interval
-                acted = False
                 while True:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
@@ -107,15 +128,14 @@ class App:
                         break
                     if self._handle_key(ch):  # returns True to quit
                         return
-                    acted = True
-                    break  # re-render promptly after a keypress
-                del acted
+                    # A keypress may have changed the view: repaint now.
+                    screen.draw(self._build_frame())
+                    last_sig = self._signature()
+                    deadline = time.monotonic() + self.interval
 
     def _handle_key(self, ch: str) -> bool:
         """Handle a keypress. Return True to quit."""
         if ch in ("q", "Q", "\x03", "\x04"):  # q, Ctrl-C, Ctrl-D
-            sys.stdout.write(_CLEAR)
-            sys.stdout.flush()
             return True
         if ch in ("n", " ", "j"):
             self.page += 1

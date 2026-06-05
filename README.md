@@ -29,7 +29,9 @@ is all you need.
 3. **Display** that PNG inside the terminal using the
    [iTerm2 inline-image protocol](https://iterm2.com/documentation-images.html).
 4. **Watch** the log directory and re-render whenever new data lands, giving a
-   live dashboard.
+   live dashboard. Repaints are **flicker-free**: the alternate screen buffer is
+   redrawn in place under synchronized output (DEC mode 2026), and an idle
+   dashboard isn't repainted at all (only changed data/views trigger a redraw).
 
 ## Language: Python
 

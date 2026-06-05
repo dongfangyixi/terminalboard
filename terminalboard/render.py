@@ -45,6 +45,19 @@ def subsample(xs: Sequence, ys: Sequence, max_points: int):
     return [xs[i] for i in idx], [ys[i] for i in idx]
 
 
+def shorten_tag(tag: str, maxlen: int) -> str:
+    """Fit a tag into ``maxlen`` cells (plotext drops titles wider than the
+    panel). Prefer the trailing path segment, then a leading-ellipsis truncate."""
+    if maxlen <= 0 or len(tag) <= maxlen:
+        return tag
+    leaf = tag.rsplit("/", 1)[-1]
+    if len(leaf) <= maxlen:
+        return leaf
+    if maxlen <= 1:
+        return leaf[:maxlen]
+    return "…" + leaf[-(maxlen - 1):]
+
+
 def grid_dims(n: int, max_cols: int = 3):
     """Choose (rows, cols) for ``n`` panels."""
     if n <= 0:
@@ -74,8 +87,14 @@ class Renderer:
         *,
         smooth: float = 0.0,
         max_cols: int = 3,
+        width: int = 0,
+        height: int = 0,
     ) -> str:  # pragma: no cover - interface
-        """Return the rendered body as a single string (no printing)."""
+        """Return the rendered body as a single string (no printing).
+
+        ``width``/``height`` are the cell budget the body must fit within
+        (0 means "use the terminal default").
+        """
         raise NotImplementedError
 
 
@@ -93,7 +112,7 @@ class TextRenderer(Renderer):
         self.marker = marker
         self.max_points = max_points
 
-    def frame(self, runs, tags, *, smooth=0.0, max_cols=3) -> str:
+    def frame(self, runs, tags, *, smooth=0.0, max_cols=3, width=0, height=0) -> str:
         import plotext as plt
 
         plt.clear_figure()
@@ -104,17 +123,26 @@ class TextRenderer(Renderer):
         plt.subplots(rows, cols)
         multi_run = len(runs) > 1
 
+        # Size each panel so the whole grid fits the given cell budget. plotext
+        # adds ~1 separator row overall, so total height ≈ rows * panel_h + 1.
+        panel_w = max(20, width // cols) if width else 0
+        panel_h = max(5, (height - 1) // rows) if height else 0
+        # Reserve room for the y-axis labels so the title isn't dropped.
+        title_max = max(6, panel_w - 9) if panel_w else 0
+
         for i, tag in enumerate(tags):
             r, c = divmod(i, cols)
             sp = plt.subplot(r + 1, c + 1)
             sp.theme(self.theme)
+            if panel_w and panel_h:
+                sp.plotsize(panel_w, panel_h)
             series = series_for_tag(runs, tag)
             for j, (run_name, s) in enumerate(series):
                 xs, ys = subsample(s.steps, ema(s.values, smooth), self.max_points)
                 color = _PALETTE[j % len(_PALETTE)]
                 label = run_name if multi_run else None
                 sp.plot(xs, ys, marker=self.marker, color=color, label=label)
-            sp.title(tag)
+            sp.title(shorten_tag(tag, title_max) if title_max else tag)
 
         return plt.build()
 
@@ -128,7 +156,7 @@ class ImageRenderer(Renderer):
         self.dpi = dpi
         self.max_points = max_points
 
-    def frame(self, runs, tags, *, smooth=0.0, max_cols=3) -> str:
+    def frame(self, runs, tags, *, smooth=0.0, max_cols=3, width=0, height=0) -> str:
         import io
 
         import matplotlib
@@ -141,6 +169,8 @@ class ImageRenderer(Renderer):
             return _EMPTY_MSG
 
         rows, cols = grid_dims(len(tags), max_cols)
+        # Leave room for the header/footer lines so the image never overflows.
+        img_cells = max(4, (height - 2)) if height else 6 * rows
         plt.style.use("dark_background")
         fig, axes = plt.subplots(
             rows, cols, figsize=(4.2 * cols, 2.6 * rows), dpi=self.dpi, squeeze=False
@@ -177,7 +207,7 @@ class ImageRenderer(Renderer):
         plt.close(fig)
         # height in cells keeps the image a stable size across frames, so a
         # repaint overdraws the previous image cleanly instead of resizing.
-        return image_escape(buf.getvalue(), height=f"{6 * rows}")
+        return image_escape(buf.getvalue(), height=f"{img_cells}")
 
 
 def make_renderer(mode: str) -> Renderer:

@@ -20,6 +20,8 @@ _ALT_ON = "\033[?1049h"
 _ALT_OFF = "\033[?1049l"
 _HIDE = "\033[?25l"
 _SHOW = "\033[?25h"
+_WRAP_OFF = "\033[?7l"    # disable line wrap: clip overlong lines at the margin
+_WRAP_ON = "\033[?7h"
 _SYNC_ON = "\033[?2026h"
 _SYNC_OFF = "\033[?2026l"
 _HOME = "\033[H"
@@ -34,14 +36,14 @@ class Screen:
 
     def __enter__(self) -> "Screen":
         if self._tty:
-            seq = (_ALT_ON if self.use_alt else "") + _HIDE
+            seq = (_ALT_ON if self.use_alt else "") + _HIDE + _WRAP_OFF
             sys.stdout.write(seq)
             sys.stdout.flush()
         return self
 
     def __exit__(self, *exc) -> None:
         if self._tty:
-            seq = _SHOW + (_ALT_OFF if self.use_alt else "")
+            seq = _WRAP_ON + _SHOW + (_ALT_OFF if self.use_alt else "")
             sys.stdout.write(seq)
             sys.stdout.flush()
 

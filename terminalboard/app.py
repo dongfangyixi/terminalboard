@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import fnmatch
+import shutil
 import sys
 import time
 from typing import List, Optional
@@ -73,13 +74,25 @@ class App:
         )
 
     def _build_frame(self) -> str:
+        cols, rows = shutil.get_terminal_size((100, 30))
         all_tags = self._matching_tags()
         page_tags, n_pages = self._page_tags(all_tags)
         header = self._header(all_tags, page_tags, n_pages)
+        footer = self._footer()
+        # Reserve the header + footer rows; the body must fit the rest so the
+        # whole frame is never taller than the terminal (overflow scrolls and
+        # would misalign the in-place repaint, leaving stale curves behind).
         body = self.renderer.frame(
             self.reader.runs, page_tags, smooth=self.smooth, max_cols=self.cols,
+            width=cols, height=max(4, rows - 2),
         )
-        return f"{header}\n{body}\n{self._footer()}"
+        frame = f"{header}\n{body}\n{footer}"
+        # Hard safety crop: never exceed the terminal height. Line wrap is
+        # disabled by the painter, so width takes care of itself.
+        lines = frame.split("\n")
+        if len(lines) > rows:
+            lines = lines[:rows]
+        return "\n".join(lines)
 
     def _signature(self):
         """Cheap fingerprint of everything that affects the rendered frame.
@@ -95,7 +108,8 @@ class App:
                 if s.steps:
                     last_step = max(last_step, s.steps[-1])
         return (total, last_step, self.page, round(self.smooth, 3),
-                self.rows, self.cols, self.tag_filter, self.renderer.name)
+                self.rows, self.cols, self.tag_filter, self.renderer.name,
+                shutil.get_terminal_size((100, 30)))
 
     def render_once(self) -> None:
         self.reader.poll()

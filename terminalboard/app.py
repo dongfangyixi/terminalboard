@@ -12,6 +12,12 @@ from .reader import BaseReader
 from .render import Renderer, grid_dims
 from .screen import Screen
 
+# Zoom ladder: (rows, cols) per page, from most-zoomed-in (1 big panel) to
+# most-zoomed-out (36 small panels). Panel counts: 1,2,4,6,9,12,16,24,36.
+_ZOOM_LADDER = [
+    (1, 1), (1, 2), (2, 2), (2, 3), (3, 3), (3, 4), (4, 4), (4, 6), (6, 6),
+]
+
 
 class App:
     def __init__(
@@ -29,10 +35,15 @@ class App:
         self.renderer = renderer
         self.tag_filter = tag_filter
         self.smooth = smooth
-        self.cols = max(1, cols)
-        self.rows = max(1, rows)
         self.interval = interval
         self.page = 0
+        # Start at the ladder rung closest to the requested grid's panel count.
+        target = max(1, rows) * max(1, cols)
+        self._zoom = min(
+            range(len(_ZOOM_LADDER)),
+            key=lambda i: abs(_ZOOM_LADDER[i][0] * _ZOOM_LADDER[i][1] - target),
+        )
+        self.rows, self.cols = _ZOOM_LADDER[self._zoom]
 
     # -- tag selection -------------------------------------------------------
 
@@ -69,9 +80,11 @@ class App:
         )
 
     def _footer(self) -> str:
+        per_page = self.rows * self.cols
         return (
             "\033[2m[q]uit  [n]ext/[p]rev page  [r]efresh  "
-            "[+/-] smooth  [g] grid  [0] no-smooth\033[0m"
+            f"[+/-] smooth  [z]oom out/[Z]in ({per_page}/page)  "
+            "[0] no-smooth\033[0m"
         )
 
     def _build_frame(self) -> str:
@@ -177,10 +190,12 @@ class App:
             self.smooth = max(0.0, round(self.smooth - 0.05, 2))
         elif ch == "0":
             self.smooth = 0.0
-        elif ch == "g":
-            # cycle a few common grid shapes
-            shapes = [(2, 3), (3, 3), (1, 2), (2, 2), (1, 1)]
-            cur = (self.rows, self.cols)
-            i = (shapes.index(cur) + 1) % len(shapes) if cur in shapes else 0
-            self.rows, self.cols = shapes[i]
+        elif ch == "z":
+            # zoom out: more, smaller panels per page
+            self._zoom = min(len(_ZOOM_LADDER) - 1, self._zoom + 1)
+            self.rows, self.cols = _ZOOM_LADDER[self._zoom]
+        elif ch == "Z":
+            # zoom in: fewer, larger panels per page
+            self._zoom = max(0, self._zoom - 1)
+            self.rows, self.cols = _ZOOM_LADDER[self._zoom]
         return False

@@ -113,7 +113,7 @@ terminalboard ../tb_logs --light --once        # one frame, no deps, no loop
 | `r` | refresh now |
 | `+` / `-` | more / less smoothing |
 | `0` | disable smoothing |
-| `g` | cycle grid layout |
+| `z` / `Z` | zoom out / in — panels per page: `1·2·4·6·9·12·16·24·36` |
 
 ### Example (text renderer)
 

@@ -1,5 +1,9 @@
 # terminalboard
 
+[![PyPI version](https://img.shields.io/pypi/v/terminalboard.svg)](https://pypi.org/project/terminalboard/)
+[![Python versions](https://img.shields.io/pypi/pyversions/terminalboard.svg)](https://pypi.org/project/terminalboard/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A **pure-SSH terminal TensorBoard scalar viewer**.
 
 Train on a remote box, SSH in, and watch your **live-updating scalar curves
@@ -76,27 +80,17 @@ The two axes are independent: pick any parser with any renderer.
 
 ## Install
 
-> ⚠️ **Not published to PyPI yet**, so `pip install terminalboard` won't work
-> until it is. Install from source for now.
-
-**From a clone** (recommended for development):
-
 ```bash
-git clone https://github.com/dongfangyixi/terminalboard.git
-cd terminalboard
-pip install -e '.[full]'     # editable; full = tensorboard + matplotlib
-```
-
-**Directly from GitHub:**
-
-```bash
-pip install "git+https://github.com/dongfangyixi/terminalboard.git"
-# with extras (default parser + --hq image renderer):
-pip install "terminalboard[full] @ git+https://github.com/dongfangyixi/terminalboard.git"
+pip install terminalboard            # text renderer + pure-Python --light parser
+pip install 'terminalboard[tb]'      # + tensorboard (default/robust parser)
+pip install 'terminalboard[hq]'      # + matplotlib (--hq image renderer)
+pip install 'terminalboard[full]'    # everything
 ```
 
 The base install pulls only `plotext` — enough for the text renderer and the
-dependency-free `--light` parser. Extras add the heavy bits:
+dependency-free `--light` parser. (The default tensorboard parser auto-falls back
+to `--light` when tensorboard isn't installed, so the base install works on its
+own.) Extras add the heavy bits:
 
 | Extra | Adds | Enables |
 |---|---|---|
@@ -105,17 +99,13 @@ dependency-free `--light` parser. Extras add the heavy bits:
 | `[full]` | both | everything |
 
 <details>
-<summary>Once it's on PyPI</summary>
+<summary>From source (development)</summary>
 
 ```bash
-pip install terminalboard            # text renderer + pure-Python --light parser
-pip install 'terminalboard[tb]'      # + tensorboard (default parser)
-pip install 'terminalboard[hq]'      # + matplotlib (--hq image renderer)
-pip install 'terminalboard[full]'    # everything
+git clone https://github.com/dongfangyixi/terminalboard.git
+cd terminalboard
+pip install -e '.[full]'     # editable; full = tensorboard + matplotlib
 ```
-
-Publishing checklist: `pip install build twine` → `python -m build` →
-`twine upload dist/*` (needs a PyPI account + the name `terminalboard` being free).
 </details>
 
 ## Usage
@@ -204,7 +194,7 @@ until you fix or cancel it.
 - [x] **Interactive filters** (`t`/`f`): live tag & experiment filtering with a
       line editor (cursor, history, no-match warning).
 - [x] **Multi-experiment overlay** with stable per-run colors and a legend.
-- [ ] Publish to PyPI.
+- [x] **Published to [PyPI](https://pypi.org/project/terminalboard/)**.
 - [ ] Sixel fallback for non-iTerm2 terminals; config file; per-tag y-axis options.
 
 ## Status

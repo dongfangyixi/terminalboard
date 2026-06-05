@@ -153,34 +153,48 @@ class App:
         tags = {t for run in self._visible_runs().values() for t in run.series}
         return sum(1 for t in tags if match_filter(value, t))
 
-    def _read_edit_key(self, keys, timeout):
-        """Read one keypress and decode arrow/nav escape sequences to tokens.
+    def _parse_chunk(self, s):
+        """Split one input chunk into a list of key tokens.
 
-        Returns a token (UP/DOWN/LEFT/RIGHT/HOME/END/DEL/ESC/IGNORE) for an
-        escape sequence, or the raw character(s) otherwise. Handles both CSI
-        (ESC ``[``) and SS3 (ESC ``O``, sent in application-cursor mode on the
-        alt screen).
+        A single ``os.read`` can return several keypresses at once (key
+        auto-repeat, fast typing, paste) — e.g. ``"\\x1b[B\\x1b[B"`` is two Down
+        presses. Each token is a nav token (UP/DOWN/LEFT/RIGHT/HOME/END/DEL/ESC/
+        IGNORE) or a single ordinary character. Handles CSI (ESC ``[``) and SS3
+        (ESC ``O``) forms.
         """
-        chunk = keys.get(timeout)
-        if chunk is None:
-            return None
-        if chunk == "\x1b":
-            # A rare split escape sequence: grab the tail before deciding.
-            more = keys.get(0.03)
-            if more:
-                chunk += more
-        if not chunk.startswith("\x1b"):
-            return chunk  # ordinary character(s)
-        body = chunk[1:]
-        if not body or body[0] not in "[O":
-            return "ESC"  # a lone Esc (or an Alt-combo we don't use)
-        code = body[1:]
         final = {"A": "UP", "B": "DOWN", "C": "RIGHT", "D": "LEFT",
                  "H": "HOME", "F": "END"}
-        if code in final:
-            return final[code]
-        return {"3~": "DEL", "1~": "HOME", "7~": "HOME",
-                "4~": "END", "8~": "END"}.get(code, "IGNORE")
+        num = {"3": "DEL", "1": "HOME", "7": "HOME", "4": "END", "8": "END"}
+        tokens = []
+        i, n = 0, len(s)
+        while i < n:
+            c = s[i]
+            if c != "\x1b":
+                tokens.append(c)
+                i += 1
+                continue
+            if i + 1 >= n or s[i + 1] not in "[O":
+                tokens.append("ESC")        # lone Esc (skip just the ESC byte)
+                i += 1
+                continue
+            j = i + 2
+            if j < n and s[j].isdigit():    # e.g. ESC [ 3 ~
+                k = j
+                while k < n and s[k].isdigit():
+                    k += 1
+                if k < n and s[k] == "~":
+                    tokens.append(num.get(s[j:k], "IGNORE"))
+                    i = k + 1
+                else:
+                    tokens.append("IGNORE")
+                    i = k
+            elif j < n:                     # ESC [ A  /  ESC O A
+                tokens.append(final.get(s[j], "IGNORE"))
+                i = j + 1
+            else:
+                tokens.append("ESC")        # incomplete ESC[ at end of chunk
+                i = j
+        return tokens
 
     def _build_frame(self, prompt=None) -> str:
         cols, rows = shutil.get_terminal_size((100, 30))
@@ -257,14 +271,16 @@ class App:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         break
-                    ch = keys.get(remaining)
-                    if ch is None:
+                    chunk = keys.get(remaining)
+                    if chunk is None:
                         break
-                    if ch in ("f", "t"):
-                        self._edit_filter(screen, keys,
-                                          "tags" if ch == "t" else "runs")
-                    elif self._handle_key(ch):  # returns True to quit
-                        return
+                    for tok in self._parse_chunk(chunk):
+                        if tok in ("f", "t"):
+                            self._edit_filter(screen, keys,
+                                              "tags" if tok == "t" else "runs")
+                        elif len(tok) == 1 and self._handle_key(tok):
+                            return  # quit
+                        # multi-char nav tokens (UP/DOWN/…) do nothing here
                     # A keypress may have changed the view: repaint now, hard-
                     # clearing if the layout changed so no stale plots remain.
                     view = self._view_sig()
@@ -289,6 +305,20 @@ class App:
         hist = self._filter_history[kind]
         hist_idx = len(hist)   # points one past the end == the live draft
         draft = None
+        pending = []           # tokens decoded from one read, drained one by one
+
+        def next_key():
+            nonlocal pending
+            if not pending:
+                chunk = keys.get(30)
+                if chunk is None:
+                    return None
+                if chunk == "\x1b":         # maybe a split escape sequence
+                    more = keys.get(0.03)
+                    if more:
+                        chunk += more
+                pending = self._parse_chunk(chunk)
+            return pending.pop(0) if pending else None
 
         while True:
             typed = "".join(buf).strip() or None
@@ -303,7 +333,7 @@ class App:
                 hard=True,
             )
 
-            key = self._read_edit_key(keys, 30)
+            key = next_key()
             if key is None:
                 continue
             if key in ("\r", "\n"):                       # apply last valid

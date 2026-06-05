@@ -27,8 +27,8 @@ _HEX_PALETTE = [
 ]
 
 
-def run_legend(run_order, width: int) -> str:
-    """A single colored line mapping each run to its curve color.
+def run_legend(run_order, run_colors, width: int) -> str:
+    """A single colored line mapping each run to its (stable) curve color.
 
     We render this ourselves instead of using plotext's per-panel legend, which
     leaks state across repeated build() calls (accumulating/duplicating, and
@@ -36,8 +36,8 @@ def run_legend(run_order, width: int) -> str:
     """
     parts = []
     budget = max(10, width // max(1, len(run_order)) - 4)
-    for i, name in enumerate(run_order):
-        code = _RUN_STYLES[i % len(_RUN_STYLES)][1]
+    for name in run_order:
+        code = _RUN_STYLES[run_colors.get(name, 0) % len(_RUN_STYLES)][1]
         label = name if len(name) <= budget else "…" + name[-(budget - 1):]
         parts.append(f"\033[{code}m──\033[0m {label}")
     return "  " + "   ".join(parts)
@@ -127,11 +127,13 @@ class Renderer:
         max_cols: int = 3,
         width: int = 0,
         height: int = 0,
+        run_colors: dict = None,
     ) -> str:  # pragma: no cover - interface
         """Return the rendered body as a single string (no printing).
 
         ``width``/``height`` are the cell budget the body must fit within
-        (0 means "use the terminal default").
+        (0 means "use the terminal default"). ``run_colors`` maps a run name to
+        a stable color index so an experiment keeps its color under filtering.
         """
         raise NotImplementedError
 
@@ -150,7 +152,8 @@ class TextRenderer(Renderer):
         self.marker = marker
         self.max_points = max_points
 
-    def frame(self, runs, tags, *, smooth=0.0, max_cols=3, width=0, height=0) -> str:
+    def frame(self, runs, tags, *, smooth=0.0, max_cols=3, width=0, height=0,
+              run_colors=None) -> str:
         import shutil
 
         import plotext as plt
@@ -164,9 +167,10 @@ class TextRenderer(Renderer):
             width = width or tw
             height = height or max(4, th - 2)
 
-        # One stable color per run, consistent across every panel.
+        # Stable color per run (filtering never reshuffles). Fall back to the
+        # visible order if the caller didn't supply a map.
         run_order = sorted(runs.keys())
-        run_color = {name: i for i, name in enumerate(run_order)}
+        run_color = run_colors or {name: i for i, name in enumerate(run_order)}
         multi_run = len(run_order) > 1
         legend_rows = 1 if multi_run else 0
 
@@ -195,7 +199,7 @@ class TextRenderer(Renderer):
                     xs, ys = subsample(
                         s.steps, ema(s.values, smooth), self.max_points
                     )
-                    color = _PALETTE[run_color[run_name] % len(_PALETTE)]
+                    color = _PALETTE[run_color.get(run_name, 0) % len(_PALETTE)]
                     # No label= here: we draw the run legend ourselves (see
                     # run_legend) to avoid plotext's leaky per-panel legend.
                     sp.plot(xs, ys, marker=self.marker, color=color)
@@ -212,7 +216,7 @@ class TextRenderer(Renderer):
 
         plot = plt.build()
         if multi_run:
-            return run_legend(run_order, width) + "\n" + plot
+            return run_legend(run_order, run_color, width) + "\n" + plot
         return plot
 
 
@@ -225,7 +229,8 @@ class ImageRenderer(Renderer):
         self.dpi = dpi
         self.max_points = max_points
 
-    def frame(self, runs, tags, *, smooth=0.0, max_cols=3, width=0, height=0) -> str:
+    def frame(self, runs, tags, *, smooth=0.0, max_cols=3, width=0, height=0,
+              run_colors=None) -> str:
         import io
 
         import matplotlib
@@ -237,6 +242,7 @@ class ImageRenderer(Renderer):
         if not tags:
             return _EMPTY_MSG
 
+        run_color = run_colors or {n: i for i, n in enumerate(sorted(runs))}
         rows, cols = grid_dims(len(tags), max_cols)
         # Leave room for the header/footer lines so the image never overflows.
         img_cells = max(4, (height - 2)) if height else 6 * rows
@@ -249,9 +255,9 @@ class ImageRenderer(Renderer):
         for i, tag in enumerate(tags):
             ax = axes[i // cols][i % cols]
             series = series_for_tag(runs, tag)
-            for j, (run_name, s) in enumerate(series):
+            for run_name, s in series:
                 xs, ys = subsample(s.steps, s.values, self.max_points)
-                color = _HEX_PALETTE[j % len(_HEX_PALETTE)]
+                color = _HEX_PALETTE[run_color.get(run_name, 0) % len(_HEX_PALETTE)]
                 if smooth > 0:
                     ax.plot(xs, ys, lw=0.7, alpha=0.25, color=color)
                     _, sm = subsample(s.steps, ema(s.values, smooth), self.max_points)

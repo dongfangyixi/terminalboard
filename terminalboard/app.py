@@ -59,6 +59,9 @@ class App:
         self.tag_filter = tag_filter
         self.run_filter = run_filter
         self.smooth = smooth
+        # Stable color index per run: assigned once and never reshuffled, so an
+        # experiment keeps its color regardless of filtering or new runs.
+        self._run_color_index: dict = {}
         self.interval = interval
         self.page = 0
         # Start at the ladder rung closest to the requested grid's panel count.
@@ -82,6 +85,14 @@ class App:
         if not self.run_filter:
             return runs
         return {n: r for n, r in runs.items() if match_filter(self.run_filter, n)}
+
+    def _run_colors(self) -> dict:
+        # Assign a stable color index to any run we haven't seen yet (sorted, so
+        # the first assignment is deterministic; later runs only ever append).
+        for name in sorted(self.reader.runs):
+            if name not in self._run_color_index:
+                self._run_color_index[name] = len(self._run_color_index)
+        return self._run_color_index
 
     def _page_tags(self, tags: List[str]):
         per_page = self.cols * self.rows
@@ -138,7 +149,7 @@ class App:
         # would misalign the in-place repaint, leaving stale curves behind).
         body = self.renderer.frame(
             self._visible_runs(), page_tags, smooth=self.smooth, max_cols=self.cols,
-            width=cols, height=max(4, rows - 2),
+            width=cols, height=max(4, rows - 2), run_colors=self._run_colors(),
         )
         frame = f"{header}\n{body}\n{footer}"
         # Hard safety crop: never exceed the terminal height. Line wrap is

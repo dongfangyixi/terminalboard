@@ -6,4 +6,4 @@ session), or as high-quality matplotlib images via the iTerm2 inline-image
 protocol with ``--hq``. No browser, no X11, no port forwarding.
 """
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"

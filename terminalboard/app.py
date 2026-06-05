@@ -154,35 +154,33 @@ class App:
         return sum(1 for t in tags if match_filter(value, t))
 
     def _read_edit_key(self, keys, timeout):
-        """Read one keypress, decoding arrow/nav escape sequences to tokens.
+        """Read one keypress and decode arrow/nav escape sequences to tokens.
 
-        Returns a token (UP/DOWN/LEFT/RIGHT/HOME/END/DEL/ESC/IGNORE) for escape
-        sequences, or the raw character otherwise. Handles both CSI (ESC ``[``)
-        and SS3 (ESC ``O``, sent in application-cursor mode on the alt screen).
+        Returns a token (UP/DOWN/LEFT/RIGHT/HOME/END/DEL/ESC/IGNORE) for an
+        escape sequence, or the raw character(s) otherwise. Handles both CSI
+        (ESC ``[``) and SS3 (ESC ``O``, sent in application-cursor mode on the
+        alt screen).
         """
-        ch = keys.get(timeout)
-        if ch is None or ch != "\x1b":
-            return ch
-        b2 = keys.get(0.05)
-        if b2 is None or b2 not in ("[", "O"):
-            return "ESC"  # a lone Esc (or Alt-combo we don't use)
-        b3 = keys.get(0.05)
-        if b3 is None:
-            return "ESC"
+        chunk = keys.get(timeout)
+        if chunk is None:
+            return None
+        if chunk == "\x1b":
+            # A rare split escape sequence: grab the tail before deciding.
+            more = keys.get(0.03)
+            if more:
+                chunk += more
+        if not chunk.startswith("\x1b"):
+            return chunk  # ordinary character(s)
+        body = chunk[1:]
+        if not body or body[0] not in "[O":
+            return "ESC"  # a lone Esc (or an Alt-combo we don't use)
+        code = body[1:]
         final = {"A": "UP", "B": "DOWN", "C": "RIGHT", "D": "LEFT",
                  "H": "HOME", "F": "END"}
-        if b3 in final:
-            return final[b3]
-        if b3.isdigit():  # e.g. ESC [ 3 ~  (Delete), ESC [ 1 ~ (Home)
-            seq = b3
-            for _ in range(4):
-                b = keys.get(0.05)
-                if b is None or b == "~":
-                    break
-                seq += b
-            return {"3": "DEL", "1": "HOME", "7": "HOME",
-                    "4": "END", "8": "END"}.get(seq, "IGNORE")
-        return "IGNORE"
+        if code in final:
+            return final[code]
+        return {"3~": "DEL", "1~": "HOME", "7~": "HOME",
+                "4~": "END", "8~": "END"}.get(code, "IGNORE")
 
     def _build_frame(self, prompt=None) -> str:
         cols, rows = shutil.get_terminal_size((100, 30))
@@ -347,9 +345,11 @@ class App:
                     hist_idx += 1
                     nxt = hist[hist_idx] if hist_idx < len(hist) else (draft or [])
                     buf, pos = list(nxt), len(nxt)
-            elif isinstance(key, str) and len(key) == 1 and key.isprintable():
-                buf.insert(pos, key)
-                pos += 1
+            elif isinstance(key, str) and key.isprintable():
+                # May be several chars at once (fast typing or a paste).
+                for c in key:
+                    buf.insert(pos, c)
+                    pos += 1
 
     def _handle_key(self, ch: str) -> bool:
         """Handle a keypress. Return True to quit."""

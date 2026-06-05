@@ -48,7 +48,8 @@ class App:
         if per_page <= 0:
             return tags, 1
         n_pages = max(1, (len(tags) + per_page - 1) // per_page)
-        self.page %= n_pages
+        # Clamp (don't wrap): paging past either end stays on the edge page.
+        self.page = max(0, min(self.page, n_pages - 1))
         start = self.page * per_page
         return tags[start:start + per_page], n_pages
 

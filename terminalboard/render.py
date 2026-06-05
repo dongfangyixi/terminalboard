@@ -113,36 +113,48 @@ class TextRenderer(Renderer):
         self.max_points = max_points
 
     def frame(self, runs, tags, *, smooth=0.0, max_cols=3, width=0, height=0) -> str:
+        import shutil
+
         import plotext as plt
 
         plt.clear_figure()
         if not tags:
             return _EMPTY_MSG
 
+        if not width or not height:
+            tw, th = shutil.get_terminal_size((100, 30))
+            width = width or tw
+            height = height or max(4, th - 2)
+
         rows, cols = grid_dims(len(tags), max_cols)
         plt.subplots(rows, cols)
         multi_run = len(runs) > 1
 
-        # Size each panel so the whole grid fits the given cell budget. plotext
-        # adds ~1 separator row overall, so total height ≈ rows * panel_h + 1.
-        panel_w = max(20, width // cols) if width else 0
-        panel_h = max(5, (height - 1) // rows) if height else 0
-        # Reserve room for the y-axis labels so the title isn't dropped.
-        title_max = max(6, panel_w - 9) if panel_w else 0
+        # Size EVERY panel (including empty trailing cells on a partial page) so
+        # all panels in a row share dimensions — plotext crashes when joining a
+        # row of mismatched-height matrices. plotext adds ~1 separator row, so
+        # total height ≈ rows * panel_h + 1.
+        panel_w = max(20, width // cols)
+        panel_h = max(5, (height - 1) // rows)
+        title_max = max(6, panel_w - 9)  # reserve room for y-axis labels
 
-        for i, tag in enumerate(tags):
-            r, c = divmod(i, cols)
-            sp = plt.subplot(r + 1, c + 1)
-            sp.theme(self.theme)
-            if panel_w and panel_h:
+        for r in range(rows):
+            for c in range(cols):
+                idx = r * cols + c
+                sp = plt.subplot(r + 1, c + 1)
+                sp.theme(self.theme)
                 sp.plotsize(panel_w, panel_h)
-            series = series_for_tag(runs, tag)
-            for j, (run_name, s) in enumerate(series):
-                xs, ys = subsample(s.steps, ema(s.values, smooth), self.max_points)
-                color = _PALETTE[j % len(_PALETTE)]
-                label = run_name if multi_run else None
-                sp.plot(xs, ys, marker=self.marker, color=color, label=label)
-            sp.title(shorten_tag(tag, title_max) if title_max else tag)
+                if idx >= len(tags):
+                    continue  # empty cell: sized but left blank
+                tag = tags[idx]
+                for j, (run_name, s) in enumerate(series_for_tag(runs, tag)):
+                    xs, ys = subsample(
+                        s.steps, ema(s.values, smooth), self.max_points
+                    )
+                    color = _PALETTE[j % len(_PALETTE)]
+                    label = run_name if multi_run else None
+                    sp.plot(xs, ys, marker=self.marker, color=color, label=label)
+                sp.title(shorten_tag(tag, title_max))
 
         return plt.build()
 

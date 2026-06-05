@@ -23,6 +23,7 @@ env/
 .idea/
 .vscode/
 
-# Example/local logs — kept out of the repo by default.
-# Comment this out if you want to commit the sample tb_logs/.
+# Local test logs / scratch data live OUTSIDE this repo (in the parent
+# working folder), but ignore them too in case any get dropped in here.
 tb_logs/
+*.tfevents.*

@@ -8,7 +8,7 @@ no port forwarding.
 
 ```
 ssh remote
-terminalboard --logdir tb_logs
+terminalboard --logdir path/to/tb_logs
 ```
 
 ---
@@ -84,9 +84,10 @@ terminalboard --logdir DIR [options]
 
 ## Status
 
-Early scaffolding — planning and README only so far. A local example log
-directory (`tb_logs/`) is used for development but is **git-ignored** (it holds
-real training data and shouldn't go in a public repo).
+Early scaffolding — planning and README only so far. Test event logs are kept
+in the **parent working folder** (e.g. `../tb_logs/`), deliberately outside this
+repository — they're real training data and don't belong in a public repo.
+Point the tool at them with `--logdir ../tb_logs`.
 
 ## Development
 

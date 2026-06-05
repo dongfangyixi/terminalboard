@@ -27,6 +27,7 @@ _SYNC_OFF = "\033[?2026l"
 _HOME = "\033[H"
 _CLEAR_EOL = "\033[K"     # erase to end of line
 _CLEAR_BELOW = "\033[J"   # erase from cursor to end of screen
+_CLEAR_ALL = "\033[2J"    # erase the whole screen
 
 
 class Screen:
@@ -47,8 +48,15 @@ class Screen:
             sys.stdout.write(seq)
             sys.stdout.flush()
 
-    def draw(self, frame: str) -> None:
-        """Repaint the screen with ``frame`` in place, without flashing."""
+    def draw(self, frame: str, *, hard: bool = False) -> None:
+        """Repaint the screen with ``frame``.
+
+        ``hard=False`` overwrites in place (flicker-free) — used for live data
+        updates where the layout is unchanged. ``hard=True`` first clears the
+        whole screen — used when the view changes (page/grid/smoothing) so a
+        new layout can never leave residue from the old one. Both are wrapped
+        in synchronized output, so even the hard clear presents atomically.
+        """
         if not self._tty:
             sys.stdout.write(frame + "\n")
             sys.stdout.flush()
@@ -56,6 +64,7 @@ class Screen:
         # Clear to end of each line so a shorter new line can't leave stale
         # characters behind; clear below to drop any now-unused trailing rows.
         body = frame.replace("\n", _CLEAR_EOL + "\n")
-        out = _SYNC_ON + _HOME + body + _CLEAR_EOL + _CLEAR_BELOW + _SYNC_OFF
+        clear = _CLEAR_ALL if hard else ""
+        out = _SYNC_ON + clear + _HOME + body + _CLEAR_EOL + _CLEAR_BELOW + _SYNC_OFF
         sys.stdout.write(out)
         sys.stdout.flush()

@@ -95,6 +95,16 @@ class App:
             lines = lines[:rows]
         return "\n".join(lines)
 
+    def _view_sig(self):
+        """The part of the state that changes the *layout* (not just the data).
+
+        When this changes we hard-clear before repainting, so a new page/grid
+        can never leave residue from the previous one.
+        """
+        return (self.page, round(self.smooth, 3), self.rows, self.cols,
+                self.tag_filter, self.renderer.name,
+                shutil.get_terminal_size((100, 30)))
+
     def _signature(self):
         """Cheap fingerprint of everything that affects the rendered frame.
 
@@ -108,9 +118,7 @@ class App:
                 total += len(s)
                 if s.steps:
                     last_step = max(last_step, s.steps[-1])
-        return (total, last_step, self.page, round(self.smooth, 3),
-                self.rows, self.cols, self.tag_filter, self.renderer.name,
-                shutil.get_terminal_size((100, 30)))
+        return (total, last_step) + self._view_sig()
 
     def render_once(self) -> None:
         self.reader.poll()
@@ -125,12 +133,15 @@ class App:
 
         with Screen() as screen, KeyReader() as keys:
             last_sig = None
+            last_view = None
             while True:
                 self.reader.poll()
                 sig = self._signature()
                 if sig != last_sig:
-                    screen.draw(self._build_frame())
-                    last_sig = sig
+                    view = self._view_sig()
+                    # Hard-clear on a layout change; soft in-place on data-only.
+                    screen.draw(self._build_frame(), hard=(view != last_view))
+                    last_sig, last_view = sig, view
 
                 # Wait out the interval, but react instantly to keypresses.
                 deadline = time.monotonic() + self.interval
@@ -143,9 +154,11 @@ class App:
                         break
                     if self._handle_key(ch):  # returns True to quit
                         return
-                    # A keypress may have changed the view: repaint now.
-                    screen.draw(self._build_frame())
-                    last_sig = self._signature()
+                    # A keypress may have changed the view: repaint now, hard-
+                    # clearing if the layout changed so no stale plots remain.
+                    view = self._view_sig()
+                    screen.draw(self._build_frame(), hard=(view != last_view))
+                    last_sig, last_view = self._signature(), view
                     deadline = time.monotonic() + self.interval
 
     def _handle_key(self, ch: str) -> bool:

@@ -303,8 +303,21 @@ class App:
         buf = list(original or "")
         pos = len(buf)
         hist = self._filter_history[kind]
-        hist_idx = len(hist)   # points one past the end == the live draft
-        draft = None
+        # The current input normally lives in a "draft" slot just past the newest
+        # entry. But if it already equals an existing history entry (the usual
+        # case — the editor pre-fills with the active filter, which is in the
+        # history), start *on* that entry: then Up goes to the previous filter
+        # (not a redundant repeat of what's shown) and Down to the next, with no
+        # duplicate "extra" empty slot.
+        cur = "".join(buf)
+        if cur and cur in hist:
+            hist_idx = hist.index(cur)
+            has_draft = False
+            draft = None
+        else:
+            hist_idx = len(hist)   # the live-draft slot
+            has_draft = True
+            draft = list(buf)
         pending = []           # tokens decoded from one read, drained one by one
 
         def next_key():
@@ -365,13 +378,17 @@ class App:
             elif key == "\x15":                           # Ctrl-U: clear
                 buf, pos = [], 0
             elif key == "UP":
-                if hist and hist_idx > 0:
+                if hist_idx > 0:
                     if hist_idx == len(hist):
                         draft = list(buf)                 # stash the live draft
                     hist_idx -= 1
                     buf, pos = list(hist[hist_idx]), len(hist[hist_idx])
             elif key == "DOWN":
-                if hist_idx < len(hist):
+                # Don't descend into the draft slot when there isn't one (the
+                # input started on the newest entry) — that's the "extra
+                # position" bug. With a draft, Down can return to it.
+                top = len(hist) if has_draft else len(hist) - 1
+                if hist_idx < top:
                     hist_idx += 1
                     nxt = hist[hist_idx] if hist_idx < len(hist) else (draft or [])
                     buf, pos = list(nxt), len(nxt)

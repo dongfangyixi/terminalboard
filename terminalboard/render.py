@@ -67,6 +67,22 @@ def subsample(xs: Sequence, ys: Sequence, max_points: int):
     return [xs[i] for i in idx], [ys[i] for i in idx]
 
 
+def _reset_plotext(plt) -> None:
+    """Fully reset plotext's global figure between frames.
+
+    plt.clear_figure() only re-inits ``_figure._active`` — the active *subplot*.
+    After a previous frame selected subplots, the master figure keeps its old
+    subplots and data, so curves accumulate across frames (duplicated plots,
+    progressively slower, eventually hanging). Re-initialising the master figure
+    clears everything. Falls back to clear_figure() if plotext internals change.
+    """
+    try:
+        import plotext._core as _pc
+        _pc._figure.__init__()
+    except Exception:
+        plt.clear_figure()
+
+
 def shorten_tag(tag: str, maxlen: int) -> str:
     """Fit a tag into ``maxlen`` cells (plotext drops titles wider than the
     panel). Prefer the trailing path segment, then a leading-ellipsis truncate."""
@@ -139,7 +155,7 @@ class TextRenderer(Renderer):
 
         import plotext as plt
 
-        plt.clear_figure()
+        _reset_plotext(plt)
         if not tags:
             return _EMPTY_MSG
 

@@ -213,6 +213,9 @@ python3 -m venv .venv
 .venv/bin/terminalboard ../tb_logs --once
 ```
 
+Cutting a release is documented in [RELEASING.md](RELEASING.md). The version is
+single-sourced from `terminalboard/__init__.py`.
+
 ## License
 
 [MIT](LICENSE).

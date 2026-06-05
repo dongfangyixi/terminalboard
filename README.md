@@ -5,15 +5,18 @@
 [![Python versions](https://img.shields.io/pypi/pyversions/terminalboard.svg)](https://pypi.org/project/terminalboard/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A **pure-SSH terminal TensorBoard scalar viewer**.
+A **pure-terminal TensorBoard scalar viewer**.
 
-Train on a remote box, SSH in, and watch your **live-updating scalar curves
-right inside the terminal** — crisp Unicode/braille text by default, or real
-iTerm2 inline images with `--hq`. No browser, no X11, no port forwarding.
+Watch your **live-updating scalar curves right inside any terminal** — locally,
+or SSH'd into a remote training box. Crisp Unicode/braille text by default, or
+real iTerm2 inline images with `--hq`. No browser, no X11, no port forwarding.
 
-```
-ssh remote
-terminalboard path/to/tb_logs
+```bash
+terminalboard path/to/tb_logs        # runs in any terminal, local or remote
+
+# training on a remote box? just SSH in first — no port forwarding needed:
+#   ssh remote
+#   terminalboard path/to/tb_logs
 ```
 
 ---
@@ -24,7 +27,8 @@ The usual TensorBoard workflow over SSH is painful: you either forward a port
 (`ssh -L 6006:...`) and open a browser, or you give up and `grep` the logs. On a
 headless training box you often can't do either cleanly. terminalboard reads the
 event files directly and draws the curves in the terminal, so a plain SSH session
-is all you need.
+is all you need — and it works just as well **locally**, anywhere you have a
+terminal and the event files.
 
 ## How it works
 

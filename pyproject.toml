@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "terminalboard"
 dynamic = ["version"]   # single-sourced from terminalboard/__init__.py
-description = "A pure-SSH terminal TensorBoard scalar viewer — live scalar curves in iTerm2, no browser, no X11, no port forwarding."
+description = "A pure-terminal TensorBoard scalar viewer — live scalar curves in your terminal (local or SSH), no browser, no X11, no port forwarding."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }

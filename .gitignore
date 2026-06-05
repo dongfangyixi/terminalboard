@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Tooling caches
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Claude Code session data
+.claude/
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Example/local logs — kept out of the repo by default.
+# Comment this out if you want to commit the sample tb_logs/.
+tb_logs/

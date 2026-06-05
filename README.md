@@ -49,51 +49,114 @@ first-class Python tooling, and the target terminal (iTerm2) supports an
 inline-image protocol — so we can render genuine matplotlib-quality curves rather
 than ASCII art.
 
+## Two rendering backends
+
+- **Default — text/braille** (`plotext`): curves drawn directly as Unicode/braille
+  characters. No image is generated, so it works over **any** SSH session, tmux, or
+  plain terminal, and redraws instantly. *(See the example below.)*
+- **`--hq` — iTerm2 image**: matplotlib rendered to an **in-memory** PNG (no temp
+  file) and streamed via the iTerm2 inline-image protocol. Pixel-perfect, but only
+  in iTerm2/WezTerm-class terminals.
+- **`--auto`**: use the image renderer in iTerm2-class terminals, else fall back to
+  text automatically.
+
 ## Two parsing backends
 
 - **Default** (no flag): parse with the official `tensorboard` library
-  (`EventAccumulator`) — most robust, handles exotic summary encodings.
+  (`EventAccumulator`) — most robust, handles exotic summary encodings. If
+  `tensorboard` isn't installed, terminalboard falls back to `--light` automatically.
 - **`--light`**: a self-contained pure-Python TFRecord + protobuf-wire parser with
   no heavy dependencies — tiny install, fast startup, ideal for a thin remote box.
 
-## Planned CLI
+The two axes are independent: pick any parser with any renderer.
+
+## Install
+
+```bash
+pip install terminalboard            # text renderer + pure-Python --light parser
+pip install 'terminalboard[tb]'      # + tensorboard (default parser)
+pip install 'terminalboard[hq]'      # + matplotlib (--hq image renderer)
+pip install 'terminalboard[full]'    # everything
+```
+
+## Usage
 
 ```
-terminalboard --logdir DIR [options]
+terminalboard LOGDIR [options]
 
-  --logdir DIR        directory of TensorBoard event files (scanned recursively)
+  LOGDIR / --logdir   directory of TensorBoard event files (scanned recursively)
   --light             use the dependency-free pure-Python parser
-  --tags GLOB         only show tags matching a glob (e.g. 'train/*loss*')
-  --interval SECONDS  refresh interval for the live loop (default: 2)
-  --grid RxC          subplot grid layout (e.g. 2x3)
-  --smooth ALPHA      EMA smoothing factor for curves
-  --once              render a single frame and exit (no live loop)
+  --hq / --text/--auto   image / text (default) / auto-detect renderer
+  --tags GLOB         comma-separated glob(s), e.g. 'train/*loss*,val/*'
+  --smooth ALPHA      EMA smoothing weight in [0,1) (default: 0.6; 0 disables)
+  --grid RxC          panels per page (default: 2x3)
+  --interval SECONDS  live refresh interval (default: 2.0)
+  --once              render a single frame and exit
+  --list              list all scalar tags and exit
+```
+
+```bash
+terminalboard ../tb_logs                       # live text dashboard
+terminalboard ../tb_logs --tags 'train/*loss*' # filter to loss curves
+terminalboard ../tb_logs --hq --grid 2x2       # high-quality iTerm2 images
+terminalboard ../tb_logs --light --once        # one frame, no deps, no loop
+```
+
+### Interactive controls (live mode)
+
+| Key | Action |
+|---|---|
+| `q` | quit |
+| `n` / `space`, `p` | next / previous page of tags |
+| `r` | refresh now |
+| `+` / `-` | more / less smoothing |
+| `0` | disable smoothing |
+| `g` | cycle grid layout |
+
+### Example (text renderer)
+
+```
+                              train/text_token_accuracy
+    ┌──────────────────────────────────────────────────────────────────────────┐
+0.97┤                                                   ⡠⣄⣀⣀⡠⠖⠦⠤⠤⠖⠒⠒⠒⠒⠉⠙⠒⠒⠉⠉⠉⠉⠉│
+    │                                              ⣠⠒⠒⠒⠞                       │
+    │                                          ⡤⠲⠴⠤⠇                           │
+0.82┤                                         ⢰⠁                               │
+    │                                     ⢠⠒⠲⠤⠎                                │
+0.67┤                                 ⣀⣀⣀⣠⠃                                    │
+    │                           ⢀⠔⠒⠒⠲⠇                                         │
+0.52┤          ⣀⣀⣀⣀⣀⣀⣀⣀⡠⠤⠤⠤⠤⠞⠉⠉⠉⠛                                              │
+    │  ⡴⠲⠒⠉⠉⠉⠉⠉⠁                                                               │
+    └┬─────────────────┬──────────────────┬─────────────────┬─────────────────┬┘
+    10               1510               3010              4510             6010
 ```
 
 ## Roadmap
 
-- [ ] **Reader — `--light`**: pure-Python TFRecord + protobuf-wire parser
+- [x] **Reader — `--light`**: pure-Python TFRecord + protobuf-wire parser
       (Event → Summary → Value; both `simple_value` and tensor-encoded scalars).
-- [ ] **Reader — default**: `tensorboard` `EventAccumulator` backend with a shared
+- [x] **Reader — default**: `tensorboard` `EventAccumulator` backend with a shared
       `ScalarSeries` data model and recursive multi-run logdir scan.
-- [ ] **Render**: matplotlib grid → PNG → iTerm2 inline-image escape sequence,
-      sized to the terminal cell grid.
-- [ ] **Live loop + CLI**: watch the logdir, refresh on change, keyboard
-      navigation (quit / page tags / filter / toggle smoothing); argparse front end.
-- [ ] Non-iTerm2 fallback, tmux passthrough, multi-run overlay, config file.
+- [x] **Render — text**: `plotext` braille grid, the default (no image).
+- [x] **Render — `--hq`**: matplotlib grid → in-memory PNG → iTerm2 inline image.
+- [x] **Live loop + CLI**: watch the logdir, refresh on change, keyboard
+      navigation (quit / page / smoothing / grid); argparse front end.
+- [ ] Multi-run overlay legends polish, per-tag y-axis options.
+- [ ] Sixel fallback for non-iTerm2 terminals; config file; tag search UI.
 
 ## Status
 
-Early scaffolding — planning and README only so far. Test event logs are kept
-in the **parent working folder** (e.g. `../tb_logs/`), deliberately outside this
+Working v0.1. Default text dashboard, `--hq` iTerm2 images, `--light` parser, and
+the live interactive loop are all functional. Test event logs are kept in the
+**parent working folder** (e.g. `../tb_logs/`), deliberately outside this
 repository — they're real training data and don't belong in a public repo.
-Point the tool at them with `--logdir ../tb_logs`.
 
 ## Development
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install matplotlib protobuf crc32c tensorboard
+.venv/bin/pip install -e '.[full]'
+.venv/bin/terminalboard ../tb_logs --once
 ```
 
 ## License

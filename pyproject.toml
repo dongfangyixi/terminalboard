@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "terminalboard"
+version = "0.1.0"
+description = "A pure-SSH terminal TensorBoard scalar viewer — live scalar curves in iTerm2, no browser, no X11, no port forwarding."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "dongfangyixi" }]
+keywords = ["tensorboard", "terminal", "iterm2", "plotext", "ssh", "ml"]
+
+# Base install is intentionally light: the text renderer (plotext) and the
+# pure-Python --light parser work with just this.
+dependencies = [
+    "plotext>=5.2",
+]
+
+[project.optional-dependencies]
+# Default parser backend (EventAccumulator).
+tb = ["tensorboard>=2.9"]
+# High-quality --hq image renderer (matplotlib -> iTerm2 inline image).
+hq = ["matplotlib>=3.5"]
+# Everything.
+full = ["tensorboard>=2.9", "matplotlib>=3.5"]
+
+[project.scripts]
+terminalboard = "terminalboard.cli:main"
+
+[project.urls]
+Repository = "https://github.com/dongfangyixi/terminalboard"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["terminalboard*"]

@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import fnmatch
+import re
 import shutil
-import sys
 import time
 from typing import List, Optional
 
@@ -18,27 +18,75 @@ _ZOOM_LADDER = [
     (1, 1), (1, 2), (2, 2), (2, 3), (3, 3), (3, 4), (4, 4), (4, 6), (6, 6),
 ]
 
+# Characters that count as part of a "word" for word-wise cursor motion / delete.
+_WORDCHARS = set(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-"
+)
+
+
+def _word_match(word: str, name: str) -> bool:
+    """Match a single filter word against ``name``.
+
+    ``!w`` negates; ``/re/`` is a regex; ``* ? [ ]`` make it a glob; otherwise a
+    case-insensitive substring.
+    """
+    neg = word.startswith("!")
+    if neg:
+        word = word[1:]
+    if not word:
+        return True
+    if len(word) >= 2 and word.startswith("/") and word.endswith("/"):
+        try:
+            ok = re.search(word[1:-1], name, re.IGNORECASE) is not None
+        except re.error:
+            ok = False
+    elif any(c in word for c in "*?["):
+        ok = fnmatch.fnmatch(name.lower(), word.lower())
+    else:
+        ok = word.lower() in name.lower()
+    return (not ok) if neg else ok
+
 
 def match_filter(patterns: Optional[str], name: str) -> bool:
-    """True if ``name`` matches any comma-separated pattern.
+    """Match ``name`` against a small filter grammar (empty matches everything).
 
-    A token containing a glob char (``* ? [``) is matched with fnmatch; a plain
-    token is matched as a case-insensitive substring — friendlier for typing
-    interactively (``loss`` matches ``train/loss`` and ``val/loss``). An empty
-    filter matches everything.
+    * ``|`` or ``,`` separate **OR** alternatives.
+    * whitespace or ``&`` within an alternative is **AND** (all must match).
+    * a word is a case-insensitive **substring** (``loss`` → ``train/loss``);
+      ``* ? [ ]`` make it a glob; ``!word`` negates; ``/regex/`` is a regex.
     """
     if not patterns:
         return True
-    for tok in patterns.split(","):
-        tok = tok.strip()
-        if not tok:
+    saw_term = False
+    for term in re.split(r"[|,]", patterns):
+        words = [w for w in re.split(r"[\s&]+", term) if w]
+        if not words:
             continue
-        if any(c in tok for c in "*?["):
-            if fnmatch.fnmatch(name, tok):
-                return True
-        elif tok.lower() in name.lower():
+        saw_term = True
+        if all(_word_match(w, name) for w in words):
             return True
-    return False
+    return not saw_term  # all-separators filter matches everything
+
+
+def _prev_word(buf: list, pos: int) -> int:
+    """Index of the start of the word before ``pos`` (skip seps, then word)."""
+    i = pos
+    while i > 0 and buf[i - 1] not in _WORDCHARS:
+        i -= 1
+    while i > 0 and buf[i - 1] in _WORDCHARS:
+        i -= 1
+    return i
+
+
+def _next_word(buf: list, pos: int) -> int:
+    """Index just past the end of the word at/after ``pos``."""
+    n = len(buf)
+    i = pos
+    while i < n and buf[i] not in _WORDCHARS:
+        i += 1
+    while i < n and buf[i] in _WORDCHARS:
+        i += 1
+    return i
 
 
 class App:
@@ -64,6 +112,8 @@ class App:
         self._run_color_index: dict = {}
         # Per-kind history of applied filter patterns (recalled with up/down).
         self._filter_history = {"tags": [], "runs": []}
+        # Rotation of the run draw order (z-order); 'o' cycles which run is on top.
+        self._order_rot = 0
         self.interval = interval
         self.page = 0
         # Start at the ladder rung closest to the requested grid's panel count.
@@ -96,6 +146,14 @@ class App:
                 self._run_color_index[name] = len(self._run_color_index)
         return self._run_color_index
 
+    def _run_order(self) -> List[str]:
+        # Draw order (last drawn = on top); 'o' rotates which run is on top.
+        names = sorted(self._visible_runs().keys())
+        if not names:
+            return names
+        k = self._order_rot % len(names)
+        return names[k:] + names[:k]
+
     def _page_tags(self, tags: List[str]):
         per_page = self.cols * self.rows
         if per_page <= 0:
@@ -125,8 +183,8 @@ class App:
     def _footer(self) -> str:
         per_page = self.rows * self.cols
         return (
-            "\033[2m[q]uit  [n/p] page  [f]ilter exp  [t]ag filter  "
-            f"[+/-] smooth  [z/Z] zoom ({per_page}/pg)  [r]efresh\033[0m"
+            "\033[2m[q/Esc]uit  [n/p]page  [f/t]ilter  [z/Z]zoom "
+            f"({per_page}/pg)  [o]rder  [+/-/0]smooth  [r]efresh  [H]elp\033[0m"
         )
 
     def _prompt_footer(self, label: str, text: str, pos: int, kind: str,
@@ -157,14 +215,16 @@ class App:
         """Split one input chunk into a list of key tokens.
 
         A single ``os.read`` can return several keypresses at once (key
-        auto-repeat, fast typing, paste) — e.g. ``"\\x1b[B\\x1b[B"`` is two Down
-        presses. Each token is a nav token (UP/DOWN/LEFT/RIGHT/HOME/END/DEL/ESC/
-        IGNORE) or a single ordinary character. Handles CSI (ESC ``[``) and SS3
-        (ESC ``O``) forms.
+        auto-repeat, fast typing, paste). Each token is a nav token
+        (UP/DOWN/LEFT/RIGHT/HOME/END/DEL/WORD-LEFT/WORD-RIGHT/WORD-DEL-BACK/
+        WORD-DEL-FWD/ESC/IGNORE) or a single ordinary character. Handles CSI
+        (ESC ``[``) and SS3 (ESC ``O``), including modified arrows
+        (Alt/Ctrl+←/→ as ESC ``[1;3D`` / ``[1;5D``) and Alt-b/f/d.
         """
-        final = {"A": "UP", "B": "DOWN", "C": "RIGHT", "D": "LEFT",
+        plain = {"A": "UP", "B": "DOWN", "C": "RIGHT", "D": "LEFT",
                  "H": "HOME", "F": "END"}
-        num = {"3": "DEL", "1": "HOME", "7": "HOME", "4": "END", "8": "END"}
+        wordkey = {"C": "WORD-RIGHT", "D": "WORD-LEFT"}
+        numtilde = {"3": "DEL", "1": "HOME", "7": "HOME", "4": "END", "8": "END"}
         tokens = []
         i, n = 0, len(s)
         while i < n:
@@ -173,27 +233,46 @@ class App:
                 tokens.append(c)
                 i += 1
                 continue
-            if i + 1 >= n or s[i + 1] not in "[O":
-                tokens.append("ESC")        # lone Esc (skip just the ESC byte)
+            if i + 1 >= n:
+                tokens.append("ESC")
                 i += 1
                 continue
-            j = i + 2
-            if j < n and s[j].isdigit():    # e.g. ESC [ 3 ~
-                k = j
-                while k < n and s[k].isdigit():
-                    k += 1
-                if k < n and s[k] == "~":
-                    tokens.append(num.get(s[j:k], "IGNORE"))
-                    i = k + 1
+            nxt = s[i + 1]
+            if nxt in "[O":                 # CSI / SS3
+                j = i + 2
+                params = ""
+                while j < n and (s[j].isdigit() or s[j] == ";"):
+                    params += s[j]
+                    j += 1
+                if j >= n:
+                    tokens.append("ESC")
+                    break
+                fin = s[j]
+                mod = params.split(";")[-1] not in ("", "1") if ";" in params else False
+                if fin == "~":
+                    tokens.append(numtilde.get(params.split(";")[0], "IGNORE"))
+                elif mod and fin in wordkey:   # Alt/Ctrl + Left/Right => by word
+                    tokens.append(wordkey[fin])
+                elif fin in plain:
+                    tokens.append(plain[fin])
                 else:
                     tokens.append("IGNORE")
-                    i = k
-            elif j < n:                     # ESC [ A  /  ESC O A
-                tokens.append(final.get(s[j], "IGNORE"))
                 i = j + 1
+            elif nxt in ("b", "B"):         # Alt-b
+                tokens.append("WORD-LEFT")
+                i += 2
+            elif nxt in ("f", "F"):         # Alt-f
+                tokens.append("WORD-RIGHT")
+                i += 2
+            elif nxt == "d":                # Alt-d
+                tokens.append("WORD-DEL-FWD")
+                i += 2
+            elif nxt in ("\x7f", "\b"):     # Alt-Backspace
+                tokens.append("WORD-DEL-BACK")
+                i += 2
             else:
-                tokens.append("ESC")        # incomplete ESC[ at end of chunk
-                i = j
+                tokens.append("ESC")        # lone Esc
+                i += 1
         return tokens
 
     def _build_frame(self, prompt=None) -> str:
@@ -208,6 +287,7 @@ class App:
         body = self.renderer.frame(
             self._visible_runs(), page_tags, smooth=self.smooth, max_cols=self.cols,
             width=cols, height=max(4, rows - 2), run_colors=self._run_colors(),
+            run_order=self._run_order(),
         )
         frame = f"{header}\n{body}\n{footer}"
         # Hard safety crop: never exceed the terminal height. Line wrap is
@@ -225,7 +305,7 @@ class App:
         """
         return (self.page, round(self.smooth, 3), self.rows, self.cols,
                 self.tag_filter, self.run_filter, self.renderer.name,
-                shutil.get_terminal_size((100, 30)))
+                self._order_rot, shutil.get_terminal_size((100, 30)))
 
     def _signature(self):
         """Cheap fingerprint of everything that affects the rendered frame.
@@ -278,6 +358,10 @@ class App:
                         if tok in ("f", "t"):
                             self._edit_filter(screen, keys,
                                               "tags" if tok == "t" else "runs")
+                        elif tok in ("H", "?"):
+                            self._show_help(screen, keys)
+                        elif tok == "ESC":
+                            return  # quit
                         elif len(tok) == 1 and self._handle_key(tok):
                             return  # quit
                         # multi-char nav tokens (UP/DOWN/…) do nothing here
@@ -375,8 +459,20 @@ class App:
                 pos = 0
             elif key in ("END", "\x05"):                  # End / Ctrl-E
                 pos = len(buf)
-            elif key == "\x15":                           # Ctrl-U: clear
+            elif key == "\x15":                           # Ctrl-U: clear line
                 buf, pos = [], 0
+            elif key == "\x0b":                           # Ctrl-K: kill to end
+                del buf[pos:]
+            elif key == "WORD-LEFT":
+                pos = _prev_word(buf, pos)
+            elif key == "WORD-RIGHT":
+                pos = _next_word(buf, pos)
+            elif key in ("WORD-DEL-BACK", "\x17"):        # Ctrl-W / Alt-Backspace
+                start = _prev_word(buf, pos)
+                del buf[start:pos]
+                pos = start
+            elif key == "WORD-DEL-FWD":                   # Alt-d
+                del buf[pos:_next_word(buf, pos)]
             elif key == "UP":
                 if hist_idx > 0:
                     if hist_idx == len(hist):
@@ -422,4 +518,47 @@ class App:
             # zoom in: fewer, larger panels per page
             self._zoom = max(0, self._zoom - 1)
             self.rows, self.cols = _ZOOM_LADDER[self._zoom]
+        elif ch == "o":
+            # cycle which overlapping curve is drawn on top
+            self._order_rot += 1
         return False
+
+    # -- help overlay --------------------------------------------------------
+
+    def _help_text(self) -> str:
+        return "\n".join([
+            "  \033[1mterminalboard\033[0m — help",
+            "",
+            "  \033[1mNavigation\033[0m",
+            "    n / space / j   next page         p / k        previous page",
+            "    z / Z           zoom out / in     o            cycle curve order (z)",
+            "    r               refresh now       q / Esc      quit",
+            "",
+            "  \033[1mSmoothing\033[0m",
+            "    + / =  more      -  less      0  off",
+            "",
+            "  \033[1mFiltering\033[0m",
+            "    t  edit tag filter        f  edit experiment filter",
+            "    In the prompt:  ←/→ move   ↑/↓ history   Home/End or ^A/^E",
+            "                    ^W del word   ^K kill-to-end   ^U clear",
+            "                    Alt/Ctrl+←/→ word move   Enter apply   Esc cancel",
+            "",
+            "  \033[1mFilter syntax\033[0m (tags and experiments)",
+            "    word         case-insensitive substring   (loss → train/loss)",
+            "    a b          AND  (both must match)",
+            "    a | b , c    OR   (| or , separate alternatives)",
+            "    * ? [ ]      glob wildcards                (train/*loss*)",
+            "    !word        NOT  (exclude)         /regex/   regular expression",
+            "",
+            "  \033[1mPlot types\033[0m  scalars (curves) · text summaries · "
+            "histograms (heatmap)",
+            "",
+            "  \033[2mPress any key to return…\033[0m",
+        ])
+
+    def _show_help(self, screen, keys) -> None:
+        cols, rows = shutil.get_terminal_size((100, 30))
+        lines = self._help_text().split("\n")[:rows]
+        screen.draw("\n".join(lines), hard=True)
+        while keys.get(30) is None:        # wait for any key
+            pass

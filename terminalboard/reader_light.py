@@ -64,75 +64,141 @@ def _iter_fields(buf: bytes) -> Iterator[Tuple[int, int, object]]:
 
 # --- message decoders -------------------------------------------------------
 
+# TensorProto field numbers
+_F_DTYPE, _F_CONTENT = 1, 4
+_F_FLOAT_VAL, _F_DOUBLE_VAL, _F_INT_VAL, _F_STRING_VAL = 5, 6, 7, 8
+DT_FLOAT, DT_DOUBLE, DT_STRING = 1, 2, 7
 
-def _tensor_to_float(buf: bytes) -> Optional[float]:
-    """Extract a single scalar from a TensorProto."""
-    dtype: Optional[int] = None
-    content: Optional[bytes] = None
-    floats: List[float] = []
-    doubles: List[float] = []
-    ints: List[int] = []
+
+def _tensor_dtype(buf: bytes) -> Optional[int]:
     for f, wt, v in _iter_fields(buf):
-        if f == 1 and wt == 0:           # dtype
+        if f == _F_DTYPE and wt == 0:
+            return v
+    return None
+
+
+def _tensor_doubles(buf: bytes) -> List[float]:
+    """All numeric values in a TensorProto (content, double_val, or float_val)."""
+    dtype = content = None
+    doubles: List[float] = []
+    floats: List[float] = []
+    for f, wt, v in _iter_fields(buf):
+        if f == _F_DTYPE and wt == 0:
             dtype = v
-        elif f == 4 and wt == 2:         # tensor_content (raw little-endian)
+        elif f == _F_CONTENT and wt == 2:
             content = v
-        elif f == 5:                     # float_val (packed or repeated)
-            if wt == 2:
-                floats += list(struct.unpack(f"<{len(v) // 4}f", v))
-            elif wt == 5:
-                floats.append(struct.unpack("<f", v)[0])
-        elif f == 6:                     # double_val
+        elif f == _F_DOUBLE_VAL:
             if wt == 2:
                 doubles += list(struct.unpack(f"<{len(v) // 8}d", v))
             elif wt == 1:
                 doubles.append(struct.unpack("<d", v)[0])
-        elif f == 8:                     # int_val (covers int/bool scalars)
-            if wt == 0:
-                ints.append(v)
+        elif f == _F_FLOAT_VAL:
+            if wt == 2:
+                floats += list(struct.unpack(f"<{len(v) // 4}f", v))
+            elif wt == 5:
+                floats.append(struct.unpack("<f", v)[0])
     if content:
-        if dtype == 2:       # DT_DOUBLE
-            return struct.unpack("<d", content[:8])[0]
-        if dtype == 1 or dtype is None:  # DT_FLOAT (default)
-            return struct.unpack("<f", content[:4])[0]
-        if dtype in (3, 9):  # DT_INT32 / DT_INT64-ish stored raw
-            n = 8 if dtype == 9 else 4
-            fmt = "<q" if dtype == 9 else "<i"
-            return float(struct.unpack(fmt, content[:n])[0])
-    if floats:
-        return floats[0]
-    if doubles:
-        return doubles[0]
-    if ints:
-        return float(ints[0])
+        if dtype == DT_DOUBLE:
+            return list(struct.unpack(f"<{len(content) // 8}d", content))
+        return list(struct.unpack(f"<{len(content) // 4}f", content))  # DT_FLOAT
+    return doubles or floats
+
+
+def _tensor_to_float(buf: bytes) -> Optional[float]:
+    """Extract a single scalar from a TensorProto."""
+    vals = _tensor_doubles(buf)
+    return vals[0] if vals else None
+
+
+def _tensor_strings(buf: bytes) -> List[str]:
+    return [bytes(v).decode("utf-8", "replace")
+            for f, wt, v in _iter_fields(buf)
+            if f == _F_STRING_VAL and wt == 2]
+
+
+def _tensor_to_histogram(buf: bytes):
+    """TF2 histogram tensor: shape [N,3] rows of (left, right, count)."""
+    vals = _tensor_doubles(buf)
+    if not vals or len(vals) % 3 != 0:
+        return None
+    edges = [vals[i + 1] for i in range(0, len(vals), 3)]   # right edges
+    counts = [vals[i + 2] for i in range(0, len(vals), 3)]
+    return edges, counts
+
+
+def _histo_proto(buf: bytes):
+    """Legacy HistogramProto: bucket_limit (field 6) + bucket counts (field 7)."""
+    edges: List[float] = []
+    counts: List[float] = []
+    for f, wt, v in _iter_fields(buf):
+        if f == 6:
+            if wt == 2:
+                edges += list(struct.unpack(f"<{len(v) // 8}d", v))
+            elif wt == 1:
+                edges.append(struct.unpack("<d", v)[0])
+        elif f == 7:
+            if wt == 2:
+                counts += list(struct.unpack(f"<{len(v) // 8}d", v))
+            elif wt == 1:
+                counts.append(struct.unpack("<d", v)[0])
+    return (edges, counts) if edges and counts else None
+
+
+def _plugin_name(meta_buf: bytes) -> Optional[str]:
+    """SummaryMetadata.plugin_data(1).plugin_name(1)."""
+    for f, wt, v in _iter_fields(meta_buf):
+        if f == 1 and wt == 2:                       # plugin_data
+            for pf, pwt, pv in _iter_fields(v):
+                if pf == 1 and pwt == 2:             # plugin_name
+                    return bytes(pv).decode("utf-8", "replace")
     return None
 
 
-def _parse_value(buf: bytes) -> Optional[Tuple[str, float]]:
-    """Decode a Summary.Value -> (tag, scalar) or None if not a scalar."""
-    tag: Optional[str] = None
-    simple: Optional[float] = None
-    tensor_val: Optional[float] = None
+def _parse_value(buf: bytes):
+    """Decode a Summary.Value -> (tag, kind, payload) or None.
+
+    kind is 'scalar' (payload float), 'text' (payload str), or 'histogram'
+    (payload (edges, counts)).
+    """
+    tag = simple = tensor = histo = plugin = None
     for f, wt, v in _iter_fields(buf):
         if f == 1 and wt == 2:           # tag (string)
             tag = bytes(v).decode("utf-8", "replace")
         elif f == 2 and wt == 5:         # simple_value (float32)
             simple = struct.unpack("<f", v)[0]
+        elif f == 5 and wt == 2:         # histo (legacy HistogramProto)
+            histo = v
         elif f == 8 and wt == 2:         # tensor (TensorProto)
-            tensor_val = _tensor_to_float(v)
+            tensor = v
+        elif f == 9 and wt == 2:         # metadata (SummaryMetadata)
+            plugin = _plugin_name(v)
     if tag is None:
         return None
-    val = simple if simple is not None else tensor_val
-    if val is None:
-        return None
-    return tag, val
+    if histo is not None:
+        hp = _histo_proto(histo)
+        if hp is not None:
+            return tag, "histogram", hp
+    if simple is not None:
+        return tag, "scalar", simple
+    if tensor is not None:
+        if plugin == "text" or _tensor_dtype(tensor) == DT_STRING:
+            strs = _tensor_strings(tensor)
+            return tag, "text", (strs[0] if strs else "")
+        if plugin == "histograms":
+            hp = _tensor_to_histogram(tensor)
+            if hp is not None:
+                return tag, "histogram", hp
+        val = _tensor_to_float(tensor)
+        if val is not None:
+            return tag, "scalar", val
+    return None
 
 
-def _parse_event(buf: bytes) -> Tuple[Optional[int], float, List[Tuple[str, float]]]:
-    """Decode an Event -> (step, wall_time, [(tag, value), ...])."""
+def _parse_event(buf: bytes):
+    """Decode an Event -> (step, wall_time, [(tag, kind, payload), ...])."""
     step: Optional[int] = None
     wall_time = 0.0
-    scalars: List[Tuple[str, float]] = []
+    values = []
     for f, wt, v in _iter_fields(buf):
         if f == 1 and wt == 1:           # wall_time (double)
             wall_time = struct.unpack("<d", v)[0]
@@ -143,8 +209,8 @@ def _parse_event(buf: bytes) -> Tuple[Optional[int], float, List[Tuple[str, floa
                 if sf == 1 and swt == 2:  # repeated Value value = 1
                     parsed = _parse_value(sv)
                     if parsed is not None:
-                        scalars.append(parsed)
-    return step, wall_time, scalars
+                        values.append(parsed)
+    return step, wall_time, values
 
 
 # --- TFRecord framing -------------------------------------------------------
@@ -203,8 +269,12 @@ def collect_run(run: Run, files: List[str], state: Dict[str, LightEventFile]) ->
         if ef is None:
             ef = LightEventFile(path)
             state[path] = ef
-        for step, wall_time, scalars in ef.read_new():
+        for step, wall_time, values in ef.read_new():
             if step is None:
-                continue
-            for tag, value in scalars:
-                run.get(tag).append(step, value, wall_time)
+                step = 0          # proto3 omits step==0; record it at 0
+            for tag, kind, payload in values:
+                s = run.get(tag, kind)
+                if kind == "histogram":
+                    s.append(step, payload[0], payload[1], wall_time)
+                else:                       # scalar (float) or text (str)
+                    s.append(step, payload, wall_time)

@@ -5,8 +5,8 @@ import math
 
 import pytest
 
-from terminalboard.app import App, match_filter
-from terminalboard.model import Run, ScalarSeries
+from terminalboard.app import App, match_filter, _prev_word, _next_word
+from terminalboard.model import HistogramSeries, Run, ScalarSeries, TextSeries
 from terminalboard.reader import make_reader
 from terminalboard.render import TextRenderer, shorten_tag, ema
 
@@ -14,18 +14,30 @@ from terminalboard.render import TextRenderer, shorten_tag, ema
 # -- parsers -----------------------------------------------------------------
 
 def test_light_parser_reads_scalars(logdir):
-    runs = make_reader(str(logdir), light=True).poll()
-    assert "run_a" in runs
+    runs = make_reader(str(logdir)).poll()             # default = light
     s = runs["run_a"].series["train/loss"]
+    assert s.kind == "scalar"
     assert s.steps == list(range(0, 100, 10))
     assert s.values[0] == pytest.approx(1.0, rel=1e-5)
     assert s.values[-1] == pytest.approx(math.exp(-90 / 50.0), rel=1e-5)
 
 
+def test_light_parser_reads_text_and_histogram(logdir):
+    runs = make_reader(str(logdir)).poll()
+    series = runs["run_a"].series
+    assert series["note/info"].kind == "text"
+    assert series["note/info"].texts[-1] == "hello\nworld"
+    h = series["weights/h"]
+    assert h.kind == "histogram"
+    assert len(h) == 10
+    edges, counts = h.buckets[0]
+    assert edges and counts
+
+
 def test_tb_parser_matches_light(logdir):
     pytest.importorskip("tensorboard")
-    light = make_reader(str(logdir), light=True).poll()["run_a"].series["train/loss"]
-    tb = make_reader(str(logdir), light=False).poll()["run_a"].series["train/loss"]
+    light = make_reader(str(logdir)).poll()["run_a"].series["train/loss"]
+    tb = make_reader(str(logdir), use_tb=True).poll()["run_a"].series["train/loss"]
     assert light.steps == tb.steps
     assert light.values == pytest.approx(tb.values, rel=1e-5)
 
@@ -33,16 +45,25 @@ def test_tb_parser_matches_light(logdir):
 # -- rendering ---------------------------------------------------------------
 
 def test_text_render_nonempty(logdir):
-    runs = make_reader(str(logdir), light=True).poll()
+    runs = make_reader(str(logdir)).poll()
     body = TextRenderer().frame(runs, ["train/loss", "train/acc"],
                                 smooth=0.5, max_cols=2, width=90, height=20)
     assert isinstance(body, str) and body.strip()
 
 
 def test_text_render_fits_height(logdir):
-    runs = make_reader(str(logdir), light=True).poll()
+    runs = make_reader(str(logdir)).poll()
     body = TextRenderer().frame(runs, ["train/loss"], width=80, height=18)
     assert body.count("\n") + 1 <= 18
+
+
+def test_render_all_kinds_mixed(logdir):
+    runs = make_reader(str(logdir)).poll()
+    body = TextRenderer().frame(
+        runs, ["train/loss", "note/info", "weights/h"],
+        max_cols=3, width=120, height=20,
+    )
+    assert isinstance(body, str) and body.strip()
 
 
 def test_flat_series_does_not_hang():
@@ -53,22 +74,54 @@ def test_flat_series_does_not_hang():
 
 
 def test_partial_page_no_crash(logdir):
-    # 1 tag in a 2x2 grid -> 3 empty cells; must not raise.
-    runs = make_reader(str(logdir), light=True).poll()
+    runs = make_reader(str(logdir)).poll()
     body = TextRenderer().frame(runs, ["train/loss"], max_cols=2, width=90, height=20)
     assert isinstance(body, str)
 
 
-# -- helpers -----------------------------------------------------------------
+# -- filter grammar ----------------------------------------------------------
 
-def test_match_filter():
+def test_match_filter_basic():
     assert match_filter("loss", "train/loss")
     assert match_filter("LOSS", "train/loss")            # case-insensitive
     assert match_filter("train/*acc*", "train/acc")      # glob
-    assert match_filter("lr,loss", "train/loss")         # comma-separated
     assert not match_filter("xyz", "train/loss")
     assert match_filter(None, "anything")                # empty matches all
 
+
+def test_match_filter_or_and_not_regex():
+    assert match_filter("loss | acc", "train/acc")       # OR with |
+    assert match_filter("a, b", "xbx")                   # OR with ,
+    assert match_filter("train loss", "train/loss")      # AND (both present)
+    assert not match_filter("train loss", "val/loss")    # AND fails (no train)
+    assert match_filter("!val", "train/loss")            # NOT
+    assert not match_filter("!loss", "train/loss")
+    assert match_filter("/lo.s/", "train/loss")          # regex
+    assert not match_filter("/^loss$/", "train/loss")
+
+
+# -- word-edit helpers -------------------------------------------------------
+
+def test_word_motion():
+    buf = list("train/loss val")
+    assert _prev_word(buf, len(buf)) == buf.index("v")   # back to 'val'
+    assert _next_word(buf, 0) == len("train")            # forward over 'train'
+
+
+# -- z-order -----------------------------------------------------------------
+
+def test_run_order_cycles(logdir):
+    app = App(make_reader(str(logdir)), TextRenderer())
+    app.reader.poll()
+    base = app._run_order()
+    app._order_rot += 1
+    rotated = app._run_order()
+    assert set(base) == set(rotated)
+    if len(base) > 1:
+        assert base != rotated                            # different top
+
+
+# -- helpers -----------------------------------------------------------------
 
 def test_shorten_tag():
     assert shorten_tag("train/loss", 50) == "train/loss"
@@ -78,25 +131,24 @@ def test_shorten_tag():
 def test_ema_smoothing():
     assert ema([1.0, 1.0, 1.0], 0.5) == [1.0, 1.0, 1.0]
     assert ema([], 0.5) == []
-    assert ema([0.0, 10.0], 0.0) == [0.0, 10.0]          # alpha 0 = no smoothing
+    assert ema([0.0, 10.0], 0.0) == [0.0, 10.0]
 
 
 # -- CLI ---------------------------------------------------------------------
 
-def test_cli_once_light(logdir, capsys):
+def test_cli_once_default(logdir, capsys):
     from terminalboard.cli import main
-    rc = main([str(logdir), "--once", "--light", "--tags", "loss"])
+    rc = main([str(logdir), "--once", "--tags", "loss"])
     assert rc == 0
-    out = capsys.readouterr().out
-    assert "loss" in out
+    assert "loss" in capsys.readouterr().out
 
 
 def test_cli_list(logdir, capsys):
     from terminalboard.cli import main
-    rc = main([str(logdir), "--light", "--list"])
+    rc = main([str(logdir), "--list"])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "train/loss" in out and "train/acc" in out
+    assert "train/loss" in out and "note/info" in out and "weights/h" in out
 
 
 def test_cli_missing_logdir():

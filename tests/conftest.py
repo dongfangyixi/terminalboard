@@ -1,10 +1,9 @@
 """Test fixtures: a tiny, dependency-free TensorBoard event-file writer.
 
-It emits the same TFRecord-framed Event/Summary protobuf that real TensorBoard
-writes (scalars as ``simple_value``), with valid masked CRC32C checksums and a
-leading ``file_version`` event — so both the ``--light`` parser *and*
-tensorboard's EventAccumulator (which verifies the CRCs) accept it, with no
-tensorflow/torch or committed binary fixtures.
+Emits TFRecord-framed Event/Summary protobuf with valid masked CRC32C and a
+leading file_version event, so both the ``--light`` parser and tensorboard's
+EventAccumulator accept it — with no tensorflow/torch or committed fixtures.
+Covers scalars, text summaries, and histograms.
 """
 from __future__ import annotations
 
@@ -34,6 +33,8 @@ def _masked_crc(data: bytes) -> int:
     return (((c >> 15) | (c << 17)) + 0xA282EAD8) & 0xFFFFFFFF
 
 
+# --- protobuf wire helpers --------------------------------------------------
+
 def _varint(n: int) -> bytes:
     out = bytearray()
     while True:
@@ -52,15 +53,28 @@ def _ld(field: int, data: bytes) -> bytes:        # length-delimited
     return _key(field, 2) + _varint(len(data)) + data
 
 
-def _value(tag: str, val: float) -> bytes:        # Summary.Value
+def scalar_value(tag: str, val: float) -> bytes:
     return _ld(1, tag.encode()) + _key(2, 5) + struct.pack("<f", val)
 
 
-def _event(step: int, wall: float, scalars) -> bytes:
+def text_value(tag: str, text: str) -> bytes:
+    # TensorProto: dtype=DT_STRING(7) (field 1), string_val (field 8)
+    raw = text.encode()
+    tensor = _key(1, 0) + _varint(7) + _ld(8, raw)
+    return _ld(1, tag.encode()) + _ld(8, tensor)
+
+
+def histogram_value(tag: str, edges, counts) -> bytes:
+    # HistogramProto: bucket_limit (field 6) + bucket counts (field 7), packed
+    hp = _key(6, 2) + _varint(len(edges) * 8) + struct.pack(f"<{len(edges)}d", *edges)
+    hp += _key(7, 2) + _varint(len(counts) * 8) + struct.pack(f"<{len(counts)}d", *counts)
+    return _ld(1, tag.encode()) + _ld(5, hp)
+
+
+def _event(step: int, wall: float, values) -> bytes:
     e = _key(1, 1) + struct.pack("<d", wall)      # wall_time (double)
     e += _key(2, 0) + _varint(step)               # step (int64)
-    summ = b"".join(_ld(1, _value(t, v)) for t, v in scalars)
-    return e + _ld(5, summ)                        # summary (Summary message)
+    return e + _ld(5, b"".join(_ld(1, v) for v in values))  # summary
 
 
 def _record(payload: bytes) -> bytes:             # TFRecord framing + CRCs
@@ -69,31 +83,33 @@ def _record(payload: bytes) -> bytes:             # TFRecord framing + CRCs
             + payload + struct.pack("<I", _masked_crc(payload)))
 
 
-def _file_version() -> bytes:                     # Event.file_version = field 3
+def _file_version() -> bytes:
     return _key(1, 1) + struct.pack("<d", 1000.0) + _ld(3, b"brain.Event:2")
 
 
-def write_event_file(path, steps, tag_values) -> None:
-    """tag_values: {tag: [value aligned with steps]}."""
+def write_events(path, records) -> None:
+    """records: iterable of (step, [value-bytes, ...])."""
     with open(path, "wb") as f:
         f.write(_record(_file_version()))
-        for i, step in enumerate(steps):
-            scalars = [(t, vals[i]) for t, vals in tag_values.items()]
-            f.write(_record(_event(step, 1000.0 + step, scalars)))
+        for step, values in records:
+            f.write(_record(_event(step, 1000.0 + step, values)))
 
 
 @pytest.fixture
 def logdir(tmp_path):
-    """A logdir with one run holding two scalar tags over 10 steps."""
-    steps = list(range(0, 100, 10))
+    """One run with two scalar tags (10 steps), a text tag, and a histogram."""
     run = tmp_path / "run_a"
     run.mkdir()
-    write_event_file(
-        run / "events.out.tfevents.1700000000.host.1.0",
-        steps,
-        {
-            "train/loss": [math.exp(-s / 50.0) for s in steps],
-            "train/acc": [s / 100.0 for s in steps],
-        },
-    )
+    records = []
+    for s in range(0, 100, 10):
+        vals = [
+            scalar_value("train/loss", math.exp(-s / 50.0)),
+            scalar_value("train/acc", s / 100.0),
+            histogram_value("weights/h", [0.0, 1.0, 2.0, 3.0],
+                            [1.0, 3.0 + s / 10, 2.0, 0.0]),
+        ]
+        if s == 0:
+            vals.append(text_value("note/info", "hello\nworld"))
+        records.append((s, vals))
+    write_events(run / "events.out.tfevents.1700000000.host.1.0", records)
     return tmp_path

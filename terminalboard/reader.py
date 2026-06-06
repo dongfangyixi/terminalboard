@@ -87,42 +87,77 @@ class TBReader(BaseReader):
         from tensorboard.backend.event_processing.event_accumulator import (
             EventAccumulator,
         )
-        from .model import ScalarSeries
+        from .model import HistogramSeries, ScalarSeries, TextSeries
 
         discovered = discover_runs(self.logdir)
         for name in discovered:
             path = os.path.join(self.logdir, name)
             acc = self._accumulators.get(name)
             if acc is None:
-                acc = EventAccumulator(path, size_guidance={"scalars": 0})
+                acc = EventAccumulator(
+                    path, size_guidance={"scalars": 0, "histograms": 0, "tensors": 0}
+                )
                 self._accumulators[name] = acc
             acc.Reload()
 
             run = Run(name=name, path=path)
-            for tag in acc.Tags().get("scalars", []):
-                events = acc.Scalars(tag)
-                s = ScalarSeries(
+            tags = acc.Tags()
+
+            for tag in tags.get("scalars", []):
+                ev = acc.Scalars(tag)
+                run.series[tag] = ScalarSeries(
                     tag=tag,
-                    steps=[e.step for e in events],
-                    values=[e.value for e in events],
-                    wall_times=[e.wall_time for e in events],
+                    steps=[e.step for e in ev],
+                    values=[e.value for e in ev],
+                    wall_times=[e.wall_time for e in ev],
                 )
-                run.series[tag] = s
+
+            for tag in tags.get("histograms", []):
+                ev = acc.Histograms(tag)
+                hs = HistogramSeries(tag=tag)
+                for e in ev:
+                    h = e.histogram_value
+                    hs.append(e.step, list(h.bucket_limit), list(h.bucket),
+                              e.wall_time)
+                run.series[tag] = hs
+
+            # Text summaries are tensors registered under the 'text' plugin.
+            try:
+                text_tags = list(acc.PluginTagToContent("text").keys())
+            except (KeyError, Exception):
+                text_tags = []
+            for tag in text_tags:
+                try:
+                    ev = acc.Tensors(tag)
+                except (KeyError, Exception):
+                    continue
+                ts = TextSeries(tag=tag)
+                for e in ev:
+                    vals = getattr(e.tensor_proto, "string_val", [])
+                    text = vals[0].decode("utf-8", "replace") if vals else ""
+                    ts.append(e.step, text, e.wall_time)
+                run.series[tag] = ts
+
             self.runs[name] = run
         return self.runs
 
 
-def make_reader(logdir: str, light: bool) -> BaseReader:
-    """Pick a backend. Falls back to the light reader if tensorboard is absent."""
-    if light:
+def make_reader(logdir: str, use_tb: bool = False) -> BaseReader:
+    """Pick a backend.
+
+    Default is the dependency-free pure-Python parser. ``use_tb`` selects the
+    tensorboard EventAccumulator (more battle-tested across exotic encodings),
+    falling back to the light reader with a note if tensorboard isn't installed.
+    """
+    if not use_tb:
         return LightReader(logdir)
     try:
         import tensorboard  # noqa: F401
     except ImportError:
         print(
-            "terminalboard: tensorboard not installed; falling back to the "
-            "--light pure-Python parser. (pip install 'terminalboard[tb]' for "
-            "the default backend.)",
+            "terminalboard: --tb requested but tensorboard isn't installed; "
+            "using the built-in parser instead. "
+            "(pip install 'terminalboard[tb]')",
             file=sys.stderr,
         )
         return LightReader(logdir)

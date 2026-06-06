@@ -783,7 +783,9 @@ class App:
             "    a b          AND  (both must match)",
             "    a | b , c    OR   (| or , separate alternatives)",
             "    * ? [ ]      glob wildcards                (train/*loss*)",
-            "    !word        NOT  (exclude)         /regex/   regular expression",
+            "    !word        NOT  (exclude)",
+            "    /regex/      regex (case-insensitive); wrap the WHOLE filter "
+            "for | or spaces",
             "",
             "  \033[1mPlot types\033[0m  scalars (curves) · text summaries · "
             "histograms (heatmap)",

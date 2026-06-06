@@ -96,8 +96,18 @@ def test_match_filter_or_and_not_regex():
     assert not match_filter("train loss", "val/loss")    # AND fails (no train)
     assert match_filter("!val", "train/loss")            # NOT
     assert not match_filter("!loss", "train/loss")
-    assert match_filter("/lo.s/", "train/loss")          # regex
+    assert match_filter("/lo.s/", "train/loss")          # regex (per-word)
     assert not match_filter("/^loss$/", "train/loss")
+
+
+def test_match_filter_whole_pattern_regex():
+    # a whole-pattern /.../ is real regex, so | and spaces work inside it
+    assert match_filter("/(loss|lr)/", "train/lr")
+    assert match_filter("/(loss|lr)/", "val/loss")
+    assert not match_filter("/(loss|lr)/", "train/acc")
+    assert match_filter(r"/^train\/(loss|lr)$/", "train/loss")
+    assert not match_filter(r"/^train\/(loss|lr)$/", "train/visual_loss")
+    assert not match_filter("/[unclosed/", "anything")   # bad regex -> no match
 
 
 # -- word-edit helpers -------------------------------------------------------

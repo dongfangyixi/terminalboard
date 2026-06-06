@@ -52,13 +52,22 @@ def _word_match(word: str, name: str) -> bool:
 def match_filter(patterns: Optional[str], name: str) -> bool:
     """Match ``name`` against a small filter grammar (empty matches everything).
 
-    * ``|`` or ``,`` separate **OR** alternatives.
-    * whitespace or ``&`` within an alternative is **AND** (all must match).
-    * a word is a case-insensitive **substring** (``loss`` → ``train/loss``);
-      ``* ? [ ]`` make it a glob; ``!word`` negates; ``/regex/`` is a regex.
+    * If the **whole** pattern is wrapped in ``/.../`` it's a single regex
+      (``re.search``, case-insensitive) — use this for regexes containing
+      ``|`` or spaces, e.g. ``/^train/(loss|lr)$/``.
+    * Otherwise: ``|`` or ``,`` separate **OR** alternatives; whitespace or ``&``
+      within an alternative is **AND**; a word is a case-insensitive **substring**
+      (``loss`` → ``train/loss``); ``* ? [ ]`` make it a glob; ``!word`` negates;
+      a per-word ``/regex/`` (without ``|``/spaces) is also a regex.
     """
     if not patterns:
         return True
+    p = patterns.strip()
+    if len(p) >= 2 and p.startswith("/") and p.endswith("/"):
+        try:
+            return re.search(p[1:-1], name, re.IGNORECASE) is not None
+        except re.error:
+            return False
     saw_term = False
     for term in re.split(r"[|,]", patterns):
         words = [w for w in re.split(r"[\s&]+", term) if w]

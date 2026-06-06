@@ -157,7 +157,13 @@ word motion, **Enter** apply, **Esc** cancel.
 | `a \| b` , `a , b` | **OR** — either matches |
 | `* ? [ ]` | glob wildcards (`train/*loss*`) |
 | `!word` | **NOT** — exclude |
-| `/regex/` | regular expression |
+| `/regex/` | regular expression (case-insensitive, unanchored — `re.search`) |
+
+This is a small glob + boolean DSL, **not** full regex: a bare word is a
+*substring* (`.` is literal, `*` is a glob wildcard). For real regex use
+`/.../`. If your regex needs `|` or spaces, make the **whole** filter the regex,
+e.g. `/^train\/(loss|lr)$/` — a `/.../` used as one word among others can't
+contain the DSL separators (`|`, `,`, space, `&`).
 
 Filters re-apply as you type. Tag and experiment filters combine — a tag shows
 only if a currently-visible experiment has it.

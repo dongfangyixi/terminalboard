@@ -168,7 +168,7 @@ def _pairs(runs, order, tag):
 # --- panel widgets ----------------------------------------------------------
 
 def _scalar_block(tag, pairs, run_color, w, h, smooth, marker, theme,
-                  max_points) -> List[str]:
+                  max_points, cursor=None) -> List[str]:
     import plotext as plt
 
     _reset_plotext(plt)
@@ -189,6 +189,11 @@ def _scalar_block(tag, pairs, run_color, w, h, smooth, marker, theme,
     if vmin is not None and (vmax - vmin) <= abs(vmin) * 1e-9 + 1e-12:
         pad = abs(vmin) * 0.5 or 1.0
         plt.ylim(vmin - pad, vmax + pad)
+    if cursor is not None:
+        try:
+            plt.vertical_line(cursor, color="white")
+        except Exception:
+            pass
     plt.title(shorten_tag(tag, max(6, w - 9)))
     return _to_block(plt.build(), w, h)
 
@@ -369,3 +374,11 @@ class TextRenderer(Renderer):
         if multi_run:
             return run_legend(sorted(runs), run_color, width) + "\n" + body
         return body
+
+    def detail_scalar(self, runs, tag, *, order, run_color, w, h, smooth,
+                      cursor_step) -> str:
+        """Full-screen scalar plot with a vertical cursor at ``cursor_step``."""
+        pairs = _pairs(runs, order, tag)
+        block = _scalar_block(tag, pairs, run_color, w, h, smooth, self.marker,
+                              self.theme, self.max_points, cursor=cursor_step)
+        return "\n".join(block)

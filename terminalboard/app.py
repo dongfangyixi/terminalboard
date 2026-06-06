@@ -1,6 +1,7 @@
 """The interactive live dashboard loop."""
 from __future__ import annotations
 
+import bisect
 import fnmatch
 import re
 import shutil
@@ -122,6 +123,7 @@ class App:
         self._detail: Optional[str] = None
         self._detail_run = 0   # which experiment is shown in detail (text/heatmap)
         self._scroll = 0       # scroll offset in a text detail view
+        self._cursor = 0       # x-cursor index in a scalar detail view
         # Start at the ladder rung closest to the requested grid's panel count.
         target = max(1, rows) * max(1, cols)
         self._zoom = min(
@@ -333,7 +335,9 @@ class App:
             header, body = self._text_detail(tag, sel, len(names), cols, body_h)
             footer = ("\033[2m↑/↓ scroll · PgUp/PgDn · ←/→ switch exp · "
                       "Esc back\033[0m")
-        else:
+        elif kind == "scalar":
+            return self._scalar_detail(tag, names, cols, rows, body_h)
+        else:                                            # histogram
             sel = names[self._detail_run % len(names)]
             order = [n for n in names if n != sel] + [sel]   # selected on top
             header = (f"\033[1m{tag}\033[0m  [{sel}]  "
@@ -344,9 +348,78 @@ class App:
                 width=cols, height=body_h, run_colors=self._run_colors(),
                 run_order=order,
             )
-            switch = "←/→ switch exp · " if (kind == "histogram" and len(names) > 1) else ""
+            switch = "←/→ switch exp · " if len(names) > 1 else ""
             footer = f"\033[2m{switch}Esc back\033[0m"
         return self._crop(f"{header}\n{body}\n{footer}", rows)
+
+    # -- scalar detail with a TensorBoard-style x-cursor + readout -----------
+
+    @staticmethod
+    def _fmt_reltime(secs: float) -> str:
+        secs = max(0, int(secs))
+        if secs < 60:
+            return f"+{secs}s"
+        m, s = divmod(secs, 60)
+        if m < 60:
+            return f"+{m}m{s:02d}s"
+        h, m = divmod(m, 60)
+        return f"+{h}h{m:02d}m"
+
+    def _scalar_track(self, tag, names) -> List[int]:
+        """Resolution-independent cursor stops (≤200) along the x (step) range."""
+        runs = self._visible_runs()
+        union = sorted({st for n in names for st in runs[n].series[tag].steps})
+        if len(union) <= 200:
+            return union
+        return [union[int(i * len(union) / 200)] for i in range(200)]
+
+    def _nearest_index(self, steps, target) -> int:
+        i = bisect.bisect_left(steps, target)
+        if i >= len(steps):
+            return len(steps) - 1
+        if i > 0 and abs(steps[i - 1] - target) <= abs(steps[i] - target):
+            return i - 1
+        return i
+
+    def _scalar_detail(self, tag, names, cols, rows, body_h) -> str:
+        from .render import ema, _RUN_STYLES
+        runs = self._visible_runs()
+        rc = self._run_colors()
+        track = self._scalar_track(tag, names)
+        if not track:
+            return self._crop(f"\033[1m{tag}\033[0m\n  (no data)\n"
+                              "\033[2mEsc back\033[0m", rows)
+        self._cursor = max(0, min(self._cursor, len(track) - 1))
+        cstep = track[self._cursor]
+
+        # Per-run readout at the cursor step.
+        readout: List[str] = []
+        for n in names[:8]:
+            s = runs[n].series[tag]
+            if not s.steps:
+                continue
+            i = self._nearest_index(s.steps, cstep)
+            val = s.values[i]
+            sm = ema(s.values, self.smooth)[i] if self.smooth > 0 else val
+            rt = ""
+            if s.wall_times and i < len(s.wall_times):
+                rt = "  t " + self._fmt_reltime(s.wall_times[i] - s.wall_times[0])
+            code = _RUN_STYLES[rc.get(n, 0) % len(_RUN_STYLES)][1]
+            readout.append(
+                f"\033[{code}m●\033[0m {n[:20]:<20} step {s.steps[i]:>8}  "
+                f"value {val:< 12.5g} smoothed {sm:< 12.5g}{rt}"
+            )
+
+        plot_h = max(2, body_h - len(readout))
+        plot = self.renderer.detail_scalar(
+            runs, tag, order=self._run_order(), run_color=rc,
+            w=cols, h=plot_h, smooth=self.smooth, cursor_step=cstep,
+        )
+        header = (f"\033[1m{tag}\033[0m  cursor @ step {cstep}  "
+                  f"({self._cursor + 1}/{len(track)})  exps={len(names)}")
+        footer = ("\033[2m←/→ cursor · PgUp/PgDn ±10 · Home/End · "
+                  "+/- smooth · Esc back\033[0m")
+        return self._crop("\n".join([header, plot] + readout + [footer]), rows)
 
     def _text_detail(self, tag, run_name, n_runs, w, h):
         series = self._visible_runs()[run_name].series[tag]
@@ -385,7 +458,7 @@ class App:
                 if s.steps:
                     last_step = max(last_step, s.steps[-1])
         return (total, last_step, self._focus, self._detail_run,
-                self._scroll) + self._view_sig()
+                self._scroll, self._cursor) + self._view_sig()
 
     def render_once(self) -> None:
         self.reader.poll()
@@ -570,6 +643,10 @@ class App:
                 self._detail = self._matching_tags()[min(self._focus, last)]
                 self._detail_run = 0
                 self._scroll = 0
+                # start the x-cursor at the latest point
+                names = self._detail_runs()
+                track = self._scalar_track(self._detail, names) if names else []
+                self._cursor = max(0, len(track) - 1)
         elif tok == "LEFT":
             self._focus = max(0, self._focus - 1)
         elif tok == "RIGHT":
@@ -614,27 +691,57 @@ class App:
             self._detail = None
             self._scroll = 0
             return None
-        nruns = max(1, len(self._detail_runs()))
-        if tok == "LEFT":
-            self._detail_run = (self._detail_run - 1) % nruns
-            self._scroll = 0
-        elif tok == "RIGHT":
-            self._detail_run = (self._detail_run + 1) % nruns
-            self._scroll = 0
-        elif tok == "UP":
-            self._scroll = max(0, self._scroll - 1)
-        elif tok == "DOWN":
-            self._scroll += 1                           # clamped when rendering
-        elif tok == "PGUP":
-            self._scroll = max(0, self._scroll - 10)
-        elif tok == "PGDN":
-            self._scroll += 10
-        elif tok == "HOME":
-            self._scroll = 0
-        elif tok == "END":
-            self._scroll = 10 ** 9
-        elif len(tok) == 1:
-            self._handle_view_key(tok)                  # smoothing/zoom still work
+        names = self._detail_runs()
+        if not names:
+            return None
+        kind = self._visible_runs()[names[0]].series[self._detail].kind
+        nruns = len(names)
+
+        if kind == "scalar":                            # ←/→ move the x-cursor
+            steps = max(1, len(self._scalar_track(self._detail, names)))
+            if tok == "LEFT":
+                self._cursor -= 1
+            elif tok == "RIGHT":
+                self._cursor += 1
+            elif tok == "PGUP":
+                self._cursor -= 10
+            elif tok == "PGDN":
+                self._cursor += 10
+            elif tok == "HOME":
+                self._cursor = 0
+            elif tok == "END":
+                self._cursor = steps - 1
+            elif len(tok) == 1:
+                self._handle_view_key(tok)
+            self._cursor = max(0, min(self._cursor, steps - 1))
+        elif kind == "text":                            # ↑/↓ scroll, ←/→ switch exp
+            if tok == "UP":
+                self._scroll = max(0, self._scroll - 1)
+            elif tok == "DOWN":
+                self._scroll += 1
+            elif tok == "PGUP":
+                self._scroll = max(0, self._scroll - 10)
+            elif tok == "PGDN":
+                self._scroll += 10
+            elif tok == "HOME":
+                self._scroll = 0
+            elif tok == "END":
+                self._scroll = 10 ** 9
+            elif tok == "LEFT":
+                self._detail_run = (self._detail_run - 1) % nruns
+                self._scroll = 0
+            elif tok == "RIGHT":
+                self._detail_run = (self._detail_run + 1) % nruns
+                self._scroll = 0
+            elif len(tok) == 1:
+                self._handle_view_key(tok)
+        else:                                           # histogram: ←/→ switch exp
+            if tok == "LEFT":
+                self._detail_run = (self._detail_run - 1) % nruns
+            elif tok == "RIGHT":
+                self._detail_run = (self._detail_run + 1) % nruns
+            elif len(tok) == 1:
+                self._handle_view_key(tok)
         return None
 
     # -- help overlay --------------------------------------------------------
@@ -650,8 +757,10 @@ class App:
             "    r               refresh now       q / Esc      quit",
             "",
             "  \033[1mDetail view\033[0m (after Enter)",
-            "    ↑/↓ · PgUp/PgDn  scroll text      ←/→          switch experiment",
-            "    Esc              back to grid (Esc again to quit)",
+            "    curve:  ←/→ move cursor (value/step/time readout) · PgUp/PgDn ±10",
+            "    text:   ↑/↓ · PgUp/PgDn scroll · ←/→ switch experiment",
+            "    histogram:  ←/→ switch experiment",
+            "    Esc     back to grid (Esc again to quit)",
             "",
             "  \033[1mSmoothing\033[0m",
             "    + / =  more      -  less      0  off",

@@ -168,6 +168,22 @@ def test_detail_histogram_and_scalar(logdir):
         a._handle_detail_key("ESC")
 
 
+def test_scalar_detail_cursor(logdir):
+    a = _app(logdir)
+    a.tag_filter = "train/loss"
+    a._handle_grid_key(_FakeScreen(), None, "\r")
+    track = a._scalar_track("train/loss", a._detail_runs())
+    assert a._cursor == len(track) - 1           # starts at the latest point
+    a._handle_detail_key("LEFT")
+    assert a._cursor == len(track) - 2
+    a._handle_detail_key("HOME")
+    assert a._cursor == 0
+    a._handle_detail_key("END")
+    assert a._cursor == len(track) - 1
+    frame = a._build_detail_frame()
+    assert "cursor @ step" in frame and "value" in frame and "smoothed" in frame
+
+
 def test_detail_q_does_not_quit_esc_goes_back(logdir):
     a = _app(logdir)
     a.tag_filter = "train/loss"

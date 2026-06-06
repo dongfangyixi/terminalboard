@@ -151,7 +151,8 @@ A page can mix any of these — the panel adapts to each tag's kind:
 
 | Key | Action |
 |---|---|
-| `q` / `Esc` | quit |
+| arrows | move the focused panel (wraps across pages) |
+| `Enter` | **inspect** the focused panel full-screen |
 | `n` / `space`, `p` | next / previous page of tags |
 | `t` / `f` | edit the **tag** / **experiment** filter live |
 | `o` | cycle which overlapping curve is drawn on top (z-order) |
@@ -159,6 +160,12 @@ A page can mix any of these — the panel adapts to each tag's kind:
 | `+` / `-` / `0` | more / less / no smoothing |
 | `r` | refresh now |
 | `H` / `?` | full help overlay |
+| `q` / `Esc` | quit |
+
+**Detail view** (after `Enter`): a single tag full-screen. **`Esc`** returns to
+the grid. By type: **scalars** overlay all experiments; **histograms** show one
+experiment (`←/→` switches); **text** is scrollable (`↑/↓`, `PgUp/PgDn`,
+`Home/End`) with `←/→` to switch experiment.
 
 In the filter prompt: **←/→** move, **↑/↓** recall history, **Home/End** (or
 `^A`/`^E`), **^W** delete word, **^K** kill-to-end, **^U** clear, **Alt/Ctrl+←/→**

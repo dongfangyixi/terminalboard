@@ -75,32 +75,32 @@ than ASCII art.
 
 ## Two parsing backends
 
-- **Default** (no flag): parse with the official `tensorboard` library
-  (`EventAccumulator`) — most robust, handles exotic summary encodings. If
-  `tensorboard` isn't installed, terminalboard falls back to `--light` automatically.
-- **`--light`**: a self-contained pure-Python TFRecord + protobuf-wire parser with
+- **Default**: a self-contained pure-Python TFRecord + protobuf-wire parser with
   no heavy dependencies — tiny install, fast startup, ideal for a thin remote box.
+  It reads scalars, text summaries, and histograms.
+- **`--tb`**: parse with the official `tensorboard` library (`EventAccumulator`)
+  instead — battle-tested across exotic encodings (needs `terminalboard[tb]`;
+  falls back to the built-in parser with a note if it isn't installed).
 
 The two axes are independent: pick any parser with any renderer.
 
 ## Install
 
 ```bash
-pip install terminalboard            # text renderer + pure-Python --light parser
-pip install 'terminalboard[tb]'      # + tensorboard (default/robust parser)
+pip install terminalboard            # everything you need by default
 pip install 'terminalboard[hq]'      # + matplotlib (--hq image renderer)
+pip install 'terminalboard[tb]'      # + tensorboard (--tb alternate parser)
 pip install 'terminalboard[full]'    # everything
 ```
 
-The base install pulls only `plotext` — enough for the text renderer and the
-dependency-free `--light` parser. (The default tensorboard parser auto-falls back
-to `--light` when tensorboard isn't installed, so the base install works on its
-own.) Extras add the heavy bits:
+The base install pulls only `plotext` and is fully functional on its own — the
+text renderer **and** the dependency-free parser (now the default) read scalars,
+text summaries, and histograms with zero heavy deps. Extras are opt-in:
 
 | Extra | Adds | Enables |
 |---|---|---|
-| `[tb]` | `tensorboard` | the default (robust) parser |
 | `[hq]` | `matplotlib` | the `--hq` iTerm2 image renderer |
+| `[tb]` | `tensorboard` | the `--tb` alternate parser (EventAccumulator) |
 | `[full]` | both | everything |
 
 <details>
@@ -119,41 +119,64 @@ pip install -e '.[full]'     # editable; full = tensorboard + matplotlib
 terminalboard LOGDIR [options]
 
   LOGDIR / --logdir   directory of TensorBoard event files (scanned recursively)
-  --light             use the dependency-free pure-Python parser
   --hq / --text/--auto   image / text (default) / auto-detect renderer
+  --tb                parse with the tensorboard library (needs [tb]); the
+                      built-in pure-Python parser is the default
   --tags GLOB         filter tags, e.g. 'train/*loss*,val/*' (live-editable: t)
   --experiments GLOB  filter experiments/runs (live-editable: f)
   --smooth ALPHA      EMA smoothing weight in [0,1) (default: 0.6; 0 disables)
   --grid RxC          panels per page (default: 2x3)
   --interval SECONDS  live refresh interval (default: 2.0)
   --once              render a single frame and exit
-  --list              list all scalar tags and exit
+  --list              list all tags and exit
 ```
 
 ```bash
 terminalboard ../tb_logs                       # live text dashboard
 terminalboard ../tb_logs --tags 'train/*loss*' # filter to loss curves
 terminalboard ../tb_logs --hq --grid 2x2       # high-quality iTerm2 images
-terminalboard ../tb_logs --light --once        # one frame, no deps, no loop
+terminalboard ../tb_logs --once                # one frame and exit
 ```
+
+## Plot types
+
+A page can mix any of these — the panel adapts to each tag's kind:
+
+- **Scalars** — line/braille curves (multiple experiments overlaid).
+- **Text** summaries — the latest text shown in a panel.
+- **Histograms** — drawn as a **heatmap** of the distribution over steps
+  (value bins × steps, shaded by density).
 
 ### Interactive controls (live mode)
 
 | Key | Action |
 |---|---|
-| `q` | quit |
+| `q` / `Esc` | quit |
 | `n` / `space`, `p` | next / previous page of tags |
-| `t` | edit the **tag** filter live (Enter apply · Esc cancel · ^U clear) |
-| `f` | edit the **experiment/run** filter live |
-| `r` | refresh now |
-| `+` / `-` | more / less smoothing |
-| `0` | disable smoothing |
+| `t` / `f` | edit the **tag** / **experiment** filter live |
+| `o` | cycle which overlapping curve is drawn on top (z-order) |
 | `z` / `Z` | zoom out / in — panels per page: `1·2·4·6·9·12·16·24·36` |
+| `+` / `-` / `0` | more / less / no smoothing |
+| `r` | refresh now |
+| `H` / `?` | full help overlay |
 
-Filters match per comma-separated token: a plain word is a case-insensitive
-**substring** (`loss` → `train/loss`, `val/loss`), while `* ? [` make it a glob
-(`train/*loss*`). The plots re-filter as you type. Tag and experiment filters
-combine — a tag only shows if a currently-visible experiment has it.
+In the filter prompt: **←/→** move, **↑/↓** recall history, **Home/End** (or
+`^A`/`^E`), **^W** delete word, **^K** kill-to-end, **^U** clear, **Alt/Ctrl+←/→**
+word motion, **Enter** apply, **Esc** cancel.
+
+### Filter syntax (tags and experiments)
+
+| Pattern | Meaning |
+|---|---|
+| `word` | case-insensitive **substring** (`loss` → `train/loss`) |
+| `a b` | **AND** — both must match |
+| `a \| b` , `a , b` | **OR** — either matches |
+| `* ? [ ]` | glob wildcards (`train/*loss*`) |
+| `!word` | **NOT** — exclude |
+| `/regex/` | regular expression |
+
+Filters re-apply as you type. Tag and experiment filters combine — a tag shows
+only if a currently-visible experiment has it.
 
 ### Multiple experiments
 
@@ -200,15 +223,20 @@ until you fix or cancel it.
       line editor (cursor, history, no-match warning).
 - [x] **Multi-experiment overlay** with stable per-run colors and a legend.
 - [x] **Published to [PyPI](https://pypi.org/project/terminalboard/)**.
-- [ ] Sixel fallback for non-iTerm2 terminals; config file; per-tag y-axis options.
+- [x] **Plot types**: text summaries and histogram heatmaps (text + `--hq`).
+- [x] **Curve z-order** (`o`), richer **filter grammar** (OR/AND/NOT/regex),
+      readline editing, **help overlay** (`H`), and `Esc` to quit.
+- [x] **Default to the pure-Python parser**; `--tb` opts into tensorboard.
+- [ ] Image summaries; Sixel fallback for non-iTerm2 terminals; config file.
 
 ## Status
 
-Working. The default text dashboard, `--hq` iTerm2 images, the `--light` parser,
-multi-experiment overlay, zoom, and live interactive tag/experiment filtering are
-all functional. Test event logs are kept in the **parent working folder** (e.g.
-`../tb_logs/`), deliberately outside this repository — they're real training data
-and don't belong in a public repo.
+Working. The default text dashboard, `--hq` iTerm2 images, the pure-Python parser
+(default), the `--tb` backend, multi-experiment overlay with z-order, zoom,
+live tag/experiment filtering, and the scalar / text / histogram-heatmap plot
+types are all functional. Test event logs are kept in the **parent working
+folder** (e.g. `../tb_logs/`), deliberately outside this repository — they're
+real training data and don't belong in a public repo.
 
 ## Development
 

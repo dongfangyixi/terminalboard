@@ -332,7 +332,7 @@ class App:
             sel = names[self._detail_run % len(names)]
             header, body = self._text_detail(tag, sel, len(names), cols, body_h)
             footer = ("\033[2m↑/↓ scroll · PgUp/PgDn · ←/→ switch exp · "
-                      "Esc back · q quit\033[0m")
+                      "Esc back\033[0m")
         else:
             sel = names[self._detail_run % len(names)]
             order = [n for n in names if n != sel] + [sel]   # selected on top
@@ -345,7 +345,7 @@ class App:
                 run_order=order,
             )
             switch = "←/→ switch exp · " if (kind == "histogram" and len(names) > 1) else ""
-            footer = f"\033[2m{switch}Esc back · q quit\033[0m"
+            footer = f"\033[2m{switch}Esc back\033[0m"
         return self._crop(f"{header}\n{body}\n{footer}", rows)
 
     def _text_detail(self, tag, run_name, n_runs, w, h):
@@ -606,8 +606,9 @@ class App:
     def _handle_detail_key(self, tok: str):
         """Handle a key in the detail (drill-down) view.
 
-        Returns 'quit' to exit the app, else None (stay / go back to grid)."""
-        if tok in ("q", "Q", "\x03", "\x04"):
+        Returns 'quit' only on Ctrl-C/Ctrl-D; Esc just goes *back* to the grid
+        (press Esc again there to quit). 'q' does nothing here."""
+        if tok in ("\x03", "\x04"):                     # Ctrl-C / Ctrl-D
             return "quit"
         if tok in ("ESC", "\r", "\n"):                  # back to grid
             self._detail = None
@@ -650,7 +651,7 @@ class App:
             "",
             "  \033[1mDetail view\033[0m (after Enter)",
             "    ↑/↓ · PgUp/PgDn  scroll text      ←/→          switch experiment",
-            "    Esc              back to grid     q            quit",
+            "    Esc              back to grid (Esc again to quit)",
             "",
             "  \033[1mSmoothing\033[0m",
             "    + / =  more      -  less      0  off",

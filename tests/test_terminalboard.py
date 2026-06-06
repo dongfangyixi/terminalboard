@@ -168,11 +168,17 @@ def test_detail_histogram_and_scalar(logdir):
         a._handle_detail_key("ESC")
 
 
-def test_detail_quit(logdir):
+def test_detail_q_does_not_quit_esc_goes_back(logdir):
     a = _app(logdir)
     a.tag_filter = "train/loss"
     a._handle_grid_key(_FakeScreen(), None, "\r")
-    assert a._handle_detail_key("q") == "quit"
+    assert a._detail == "train/loss"
+    assert a._handle_detail_key("q") is None      # q does nothing in detail
+    assert a._detail == "train/loss"              # still in detail
+    a._handle_detail_key("ESC")                   # Esc -> back to grid
+    assert a._detail is None
+    # and from the grid, Esc quits
+    assert a._handle_grid_key(_FakeScreen(), None, "ESC") is True
 
 
 # -- helpers -----------------------------------------------------------------

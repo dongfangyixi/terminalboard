@@ -366,12 +366,9 @@ class App:
         return f"+{h}h{m:02d}m"
 
     def _scalar_track(self, tag, names) -> List[int]:
-        """Resolution-independent cursor stops (≤200) along the x (step) range."""
+        """Cursor stops = every real data step (so ←/→ moves one point)."""
         runs = self._visible_runs()
-        union = sorted({st for n in names for st in runs[n].series[tag].steps})
-        if len(union) <= 200:
-            return union
-        return [union[int(i * len(union) / 200)] for i in range(200)]
+        return sorted({st for n in names for st in runs[n].series[tag].steps})
 
     def _nearest_index(self, steps, target) -> int:
         i = bisect.bisect_left(steps, target)
@@ -417,7 +414,7 @@ class App:
         )
         header = (f"\033[1m{tag}\033[0m  cursor @ step {cstep}  "
                   f"({self._cursor + 1}/{len(track)})  exps={len(names)}")
-        footer = ("\033[2m←/→ cursor · PgUp/PgDn ±10 · Home/End · "
+        footer = ("\033[2m←/→ cursor · Shift+←/→ fast · Home/End · "
                   "+/- smooth · Esc back\033[0m")
         return self._crop("\n".join([header, plot] + readout + [footer]), rows)
 
@@ -699,14 +696,15 @@ class App:
 
         if kind == "scalar":                            # ←/→ move the x-cursor
             steps = max(1, len(self._scalar_track(self._detail, names)))
+            fast = max(2, steps // 25)                   # Shift/Pg jump amount
             if tok == "LEFT":
                 self._cursor -= 1
             elif tok == "RIGHT":
                 self._cursor += 1
-            elif tok == "PGUP":
-                self._cursor -= 10
-            elif tok == "PGDN":
-                self._cursor += 10
+            elif tok in ("WORD-LEFT", "PGUP"):           # Shift+← / PgUp: fast
+                self._cursor -= fast
+            elif tok in ("WORD-RIGHT", "PGDN"):          # Shift+→ / PgDn: fast
+                self._cursor += fast
             elif tok == "HOME":
                 self._cursor = 0
             elif tok == "END":
@@ -757,7 +755,7 @@ class App:
             "    r               refresh now       q / Esc      quit",
             "",
             "  \033[1mDetail view\033[0m (after Enter)",
-            "    curve:  ←/→ move cursor (value/step/time readout) · PgUp/PgDn ±10",
+            "    curve:  ←/→ move cursor (value/step/time readout) · Shift+←/→ fast",
             "    text:   ↑/↓ · PgUp/PgDn scroll · ←/→ switch experiment",
             "    histogram:  ←/→ switch experiment",
             "    Esc     back to grid (Esc again to quit)",

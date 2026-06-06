@@ -5,4 +5,4 @@ SSH) as Unicode/braille text — scalars as curves, text summaries, and histogra
 as heatmaps. No browser, no X11, no port forwarding.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"

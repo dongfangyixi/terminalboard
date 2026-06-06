@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.1
+
+### Fixed / changed
+- **Filter regex**: when the *whole* filter is wrapped in `/.../` it's now a real
+  regex (`re.search`, case-insensitive), so `|` and spaces work
+  (e.g. `/^train\/(loss|lr)$/`). A per-word `/regex/` (without `|`/spaces) still
+  works inside boolean expressions.
+- Help overlay clarifies the regex rule; package summary now mentions text and
+  histogram support.
+
 ## 0.2.0
 
 ### Added

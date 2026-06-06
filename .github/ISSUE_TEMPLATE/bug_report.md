@@ -14,7 +14,7 @@ labels: bug
 
 - terminalboard version: <!-- terminalboard --version -->
 - Terminal: <!-- iTerm2 / WezTerm / tmux / plain ssh ... -->
-- Renderer/parser: <!-- default text / --hq / --light -->
+- Parser: <!-- default (built-in) / --tb -->
 - OS + Python: <!-- e.g. macOS 14, Python 3.12 -->
 
 **Log layout (if relevant)**

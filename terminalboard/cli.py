@@ -21,9 +21,9 @@ def _parse_grid(value: str):
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="terminalboard",
-        description="A pure-terminal TensorBoard viewer. Live scalar curves "
-        "(and text / histogram-heatmaps) rendered directly in the terminal — "
-        "braille text by default, or high-quality iTerm2 inline images with --hq.",
+        description="A pure-terminal TensorBoard viewer. Live scalar curves, "
+        "text summaries, and histogram heatmaps rendered directly in the "
+        "terminal as braille/Unicode — no browser, no X11, no port forwarding.",
     )
     p.add_argument("logdir", nargs="?", default=None,
                    help="directory of TensorBoard event files (scanned recursively)")
@@ -36,15 +36,6 @@ def build_parser() -> argparse.ArgumentParser:
     # The built-in parser is the default now; --light is kept as a no-op alias.
     p.add_argument("--light", action="store_true",
                    help=argparse.SUPPRESS)
-
-    mode = p.add_mutually_exclusive_group()
-    mode.add_argument("--hq", action="store_const", dest="mode", const="hq",
-                      help="high-quality matplotlib curves via iTerm2 inline images")
-    mode.add_argument("--text", action="store_const", dest="mode", const="text",
-                      help="braille/Unicode text curves (default)")
-    mode.add_argument("--auto", action="store_const", dest="mode", const="auto",
-                      help="pick --hq in iTerm2-class terminals, else --text")
-    p.set_defaults(mode="text")
 
     p.add_argument("--tags", default=None,
                    help="comma-separated filter for tags, e.g. 'train/*loss*' "
@@ -81,7 +72,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
 
     from .reader import make_reader
-    from .render import make_renderer
+    from .render import TextRenderer
     from .app import App
 
     reader = make_reader(logdir, use_tb=args.tb)
@@ -97,7 +88,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(t)
         return 0
 
-    renderer = make_renderer(args.mode)
+    renderer = TextRenderer()
     rows, cols = args.grid
     app = App(
         reader, renderer,

@@ -34,12 +34,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Default parser backend (EventAccumulator).
+# Alternate parser backend (--tb, tensorboard's EventAccumulator).
 tb = ["tensorboard>=2.9"]
-# High-quality --hq image renderer (matplotlib -> iTerm2 inline image).
-hq = ["matplotlib>=3.5"]
-# Everything.
-full = ["tensorboard>=2.9", "matplotlib>=3.5"]
 # Development / testing.
 dev = ["pytest>=7", "build", "twine"]
 

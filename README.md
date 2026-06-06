@@ -5,11 +5,11 @@
 [![Python versions](https://img.shields.io/pypi/pyversions/terminalboard)](https://pypi.org/project/terminalboard/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A **pure-terminal TensorBoard scalar viewer**.
+A **pure-terminal TensorBoard viewer**.
 
-Watch your **live-updating scalar curves right inside any terminal** — locally,
-or SSH'd into a remote training box. Crisp Unicode/braille text by default, or
-real iTerm2 inline images with `--hq`. No browser, no X11, no port forwarding.
+Watch your **live-updating scalar curves, text summaries, and histogram heatmaps
+right inside any terminal** — locally, or SSH'd into a remote training box —
+drawn as crisp Unicode/braille. No browser, no X11, no port forwarding.
 
 ```bash
 terminalboard path/to/tb_logs        # runs in any terminal, local or remote
@@ -33,13 +33,10 @@ terminal and the event files.
 ## How it works
 
 1. **Read** the TensorBoard event files (`events.out.tfevents.*`) from a log
-   directory (scanned recursively for multiple runs) and collect the scalar series.
-2. **Render** the selected curves — by default as Unicode/braille **text** (works
-   in any terminal), or with `--hq` as a matplotlib PNG.
-3. **Display** them: braille text is printed directly; the `--hq` PNG is streamed
-   via the [iTerm2 inline-image protocol](https://iterm2.com/documentation-images.html)
-   (built in-memory, no temp file).
-4. **Watch** the log directory and re-render whenever new data lands, giving a
+   directory (scanned recursively for multiple runs) and collect the series.
+2. **Render** the selected tags as **Unicode/braille text** — curves, text
+   panels, and histogram heatmaps — tiled into a grid that fits the terminal.
+3. **Watch** the log directory and re-render whenever new data lands, giving a
    live dashboard. Repaints are **flicker-free**: the alternate screen buffer is
    redrawn in place under synchronized output (DEC mode 2026), and an idle
    dashboard isn't repainted at all (only changed data/views trigger a redraw).
@@ -51,27 +48,14 @@ Next.js/TypeScript implementation:
 
 | Factor | Python ✅ | Next.js / TypeScript |
 |---|---|---|
-| Reading TB event logs | First-class. The format is TFRecord-framed protobuf; `tensorboard`/`tbparse` parse it natively, or a small self-contained parser does. | No mature TFRecord/TB-protobuf reader — you'd reimplement framing + protobuf decoding by hand. |
-| High-quality curves | matplotlib → PNG → iTerm2 inline image. | No native terminal-plotting story. |
+| Reading TB event logs | First-class. The format is TFRecord-framed protobuf; a small self-contained parser handles it (and `tensorboard` is there if you want it). | No mature TFRecord/TB-protobuf reader — you'd reimplement framing + protobuf decoding by hand. |
+| Terminal plotting | `plotext` braille/Unicode curves + custom widgets. | No native terminal-plotting story. |
 | Live tailing | `watchdog` / offset polling. | Doable, no advantage. |
 | Fit for purpose | It's a terminal CLI, and Python is the lingua franca of the ML/TensorBoard ecosystem. | Next.js is a web/SSR framework; its core value (React, routing, browser) is unused here. |
-| This machine | Python 3.12 already present. | Node isn't installed. |
 
 The decisive factor: TensorBoard logs are a TF-specific protobuf format with
-first-class Python tooling, and the target terminal (iTerm2) supports an
-inline-image protocol — so we can render genuine matplotlib-quality curves rather
-than ASCII art.
-
-## Two rendering backends
-
-- **Default — text/braille** (`plotext`): curves drawn directly as Unicode/braille
-  characters. No image is generated, so it works over **any** SSH session, tmux, or
-  plain terminal, and redraws instantly. *(See the example below.)*
-- **`--hq` — iTerm2 image**: matplotlib rendered to an **in-memory** PNG (no temp
-  file) and streamed via the iTerm2 inline-image protocol. Pixel-perfect, but only
-  in iTerm2/WezTerm-class terminals.
-- **`--auto`**: use the image renderer in iTerm2-class terminals, else fall back to
-  text automatically.
+first-class Python tooling, and Python has mature terminal-plotting libraries —
+so the whole thing is pure text with no browser or image protocol needed.
 
 ## Two parsing backends
 
@@ -82,26 +66,20 @@ than ASCII art.
   instead — battle-tested across exotic encodings (needs `terminalboard[tb]`;
   falls back to the built-in parser with a note if it isn't installed).
 
-The two axes are independent: pick any parser with any renderer.
-
 ## Install
 
 ```bash
 pip install terminalboard            # everything you need by default
-pip install 'terminalboard[hq]'      # + matplotlib (--hq image renderer)
 pip install 'terminalboard[tb]'      # + tensorboard (--tb alternate parser)
-pip install 'terminalboard[full]'    # everything
 ```
 
 The base install pulls only `plotext` and is fully functional on its own — the
-text renderer **and** the dependency-free parser (now the default) read scalars,
-text summaries, and histograms with zero heavy deps. Extras are opt-in:
+dependency-free parser (the default) reads scalars, text summaries, and
+histograms with zero heavy deps. The only opt-in extra:
 
 | Extra | Adds | Enables |
 |---|---|---|
-| `[hq]` | `matplotlib` | the `--hq` iTerm2 image renderer |
 | `[tb]` | `tensorboard` | the `--tb` alternate parser (EventAccumulator) |
-| `[full]` | both | everything |
 
 <details>
 <summary>From source (development)</summary>
@@ -109,7 +87,7 @@ text summaries, and histograms with zero heavy deps. Extras are opt-in:
 ```bash
 git clone https://github.com/dongfangyixi/terminalboard.git
 cd terminalboard
-pip install -e '.[full]'     # editable; full = tensorboard + matplotlib
+pip install -e '.[tb,dev]'   # editable, with tensorboard + test tools
 ```
 </details>
 
@@ -119,7 +97,6 @@ pip install -e '.[full]'     # editable; full = tensorboard + matplotlib
 terminalboard LOGDIR [options]
 
   LOGDIR / --logdir   directory of TensorBoard event files (scanned recursively)
-  --hq / --text/--auto   image / text (default) / auto-detect renderer
   --tb                parse with the tensorboard library (needs [tb]); the
                       built-in pure-Python parser is the default
   --tags GLOB         filter tags, e.g. 'train/*loss*,val/*' (live-editable: t)
@@ -132,9 +109,9 @@ terminalboard LOGDIR [options]
 ```
 
 ```bash
-terminalboard ../tb_logs                       # live text dashboard
+terminalboard ../tb_logs                       # live dashboard
 terminalboard ../tb_logs --tags 'train/*loss*' # filter to loss curves
-terminalboard ../tb_logs --hq --grid 2x2       # high-quality iTerm2 images
+terminalboard ../tb_logs --grid 2x2            # 4 panels per page
 terminalboard ../tb_logs --once                # one frame and exit
 ```
 
@@ -222,24 +199,25 @@ until you fix or cancel it.
       (Event → Summary → Value; both `simple_value` and tensor-encoded scalars).
 - [x] **Reader — default**: `tensorboard` `EventAccumulator` backend with a shared
       `ScalarSeries` data model and recursive multi-run logdir scan.
-- [x] **Render — text**: `plotext` braille grid, the default (no image).
-- [x] **Render — `--hq`**: matplotlib grid → in-memory PNG → iTerm2 inline image.
+- [x] **Render**: `plotext` braille grid (pure text — scalars, text, heatmaps).
 - [x] **Live loop + CLI**: flicker-free repaints, keyboard navigation; argparse front end.
 - [x] **Zoom** (`z`/`Z`): 1·2·4·6·9·12·16·24·36 panels per page.
 - [x] **Interactive filters** (`t`/`f`): live tag & experiment filtering with a
       line editor (cursor, history, no-match warning).
 - [x] **Multi-experiment overlay** with stable per-run colors and a legend.
 - [x] **Published to [PyPI](https://pypi.org/project/terminalboard/)**.
-- [x] **Plot types**: text summaries and histogram heatmaps (text + `--hq`).
+- [x] **Plot types**: scalar curves, text summaries, and histogram heatmaps.
+- [x] **Focus + drill-down**: arrows move focus, Enter inspects a tag full-screen
+      (scalars overlay, heatmap/text switch experiments, text scrolls).
 - [x] **Curve z-order** (`o`), richer **filter grammar** (OR/AND/NOT/regex),
       readline editing, **help overlay** (`H`), and `Esc` to quit.
 - [x] **Default to the pure-Python parser**; `--tb` opts into tensorboard.
-- [ ] Image summaries; Sixel fallback for non-iTerm2 terminals; config file.
+- [ ] Config diff across experiments; per-tag y-axis options; config file.
 
 ## Status
 
-Working. The default text dashboard, `--hq` iTerm2 images, the pure-Python parser
-(default), the `--tb` backend, multi-experiment overlay with z-order, zoom,
+Working. The text dashboard, the pure-Python parser (default) and `--tb`
+backend, multi-experiment overlay with z-order, zoom, focus + drill-down detail,
 live tag/experiment filtering, and the scalar / text / histogram-heatmap plot
 types are all functional. Test event logs are kept in the **parent working
 folder** (e.g. `../tb_logs/`), deliberately outside this repository — they're
@@ -249,7 +227,7 @@ real training data and don't belong in a public repo.
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -e '.[full]'
+.venv/bin/pip install -e '.[tb,dev]'
 .venv/bin/terminalboard ../tb_logs --once
 ```
 

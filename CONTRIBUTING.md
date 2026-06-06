@@ -17,7 +17,7 @@ You don't need write access to this repo. The standard flow:
 3. **Set up a dev environment:**
    ```bash
    python3 -m venv .venv
-   .venv/bin/pip install -e '.[full]'
+   .venv/bin/pip install -e '.[tb,dev]'
    ```
 4. **Make your change**, and check it runs:
    ```bash
@@ -45,9 +45,9 @@ authorship.
 ## Guidelines
 
 - **Keep the base install light.** Only `plotext` is a hard dependency; the
-  default `--light` parser and the text renderer must work with no heavy deps.
-  `tensorboard` and `matplotlib` stay behind the `[tb]` / `[hq]` extras and must
-  be imported lazily (inside the function that needs them), so startup stays fast.
+  built-in parser and the renderer must work with no heavy deps. `tensorboard`
+  stays behind the `[tb]` extra and must be imported lazily (inside the function
+  that needs it), so startup stays fast.
 - **Match the surrounding style** — small, focused modules; clear names; comments
   that explain *why*, not *what*.
 - **One logical change per PR.** Smaller PRs review and merge faster.
@@ -58,11 +58,10 @@ authorship.
 
 ```
 terminalboard/
-  model.py         shared ScalarSeries / Run data model
-  reader.py        run discovery + tensorboard (default) backend
-  reader_light.py  pure-Python TFRecord + protobuf parser (--light)
-  render.py        plotext text renderer + matplotlib/iTerm2 image renderer
-  iterm2.py        iTerm2 inline-image escape sequences
+  model.py         scalar / text / histogram series data model
+  reader_light.py  pure-Python TFRecord + protobuf parser (default)
+  reader.py        run discovery + tensorboard backend (--tb)
+  render.py        plotext text renderer: scalar curves, text, histogram heatmaps
   screen.py        flicker-free terminal painter (alt screen + sync output)
   keys.py          raw-fd key reader
   app.py           live loop, paging/zoom, interactive filters

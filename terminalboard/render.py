@@ -1,14 +1,10 @@
-"""Renderers: turn selected series into terminal output.
+"""Rendering: turn selected series into terminal output.
 
 Panels are rendered independently into fixed-size text blocks and then tiled into
 a grid, so a page can freely mix **scalars** (curves), **text** summaries, and
-**histograms** (drawn as a heatmap of the distribution over steps).
-
-Two backends, same interface:
-  * :class:`TextRenderer`  — plotext braille/Unicode + custom block widgets, the
-    default. Pure text, works over any terminal, no image generated.
-  * :class:`ImageRenderer` — matplotlib rendered to an in-memory PNG and streamed
-    via the iTerm2 inline-image protocol (``--hq``). No temp file on disk.
+**histograms** (drawn as a heatmap of the distribution over steps). Everything is
+pure text (plotext braille/Unicode + custom block widgets) — no images, works
+over any terminal.
 """
 from __future__ import annotations
 
@@ -27,10 +23,6 @@ _RUN_STYLES = [
     ("blue", "34"), ("red", "31"), ("white", "37"),
 ]
 _PALETTE = [name for name, _ in _RUN_STYLES]
-_HEX_PALETTE = [
-    "#4FC3F7", "#81C784", "#BA68C8", "#FFD54F",
-    "#64B5F6", "#E57373", "#A1887F", "#4DB6AC",
-]
 _SHADES = " ░▒▓█"
 _EMPTY_MSG = "\n  (nothing matches the current filter yet…)\n"
 
@@ -377,135 +369,3 @@ class TextRenderer(Renderer):
         if multi_run:
             return run_legend(sorted(runs), run_color, width) + "\n" + body
         return body
-
-
-class ImageRenderer(Renderer):
-    """matplotlib -> in-memory PNG -> iTerm2 inline image (``--hq``)."""
-
-    name = "hq"
-
-    def __init__(self, dpi: int = 130, max_points: int = 5000):
-        self.dpi = dpi
-        self.max_points = max_points
-
-    def frame(self, runs, tags, *, smooth=0.0, max_cols=3, width=0, height=0,
-              run_colors=None, run_order=None, focus=-1) -> str:
-        import io
-
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-
-        from .iterm2 import image_escape
-
-        if not tags:
-            return _EMPTY_MSG
-
-        run_color = run_colors or {n: i for i, n in enumerate(sorted(runs))}
-        order = [n for n in (run_order or sorted(runs)) if n in runs]
-        multi_run = len(runs) > 1
-        rows, cols = grid_dims(len(tags), max_cols)
-        img_cells = max(4, (height - 2)) if height else 6 * rows
-        plt.style.use("dark_background")
-        fig, axes = plt.subplots(
-            rows, cols, figsize=(4.2 * cols, 2.6 * rows), dpi=self.dpi, squeeze=False
-        )
-
-        for i, tag in enumerate(tags):
-            ax = axes[i // cols][i % cols]
-            pairs = _pairs(runs, order, tag)
-            kind = pairs[0][1].kind if pairs else "scalar"
-            tk = {"color": "#FFD54F", "fontweight": "bold"} if i == focus else {}
-            if kind == "text":
-                self._text_ax(ax, tag, pairs, run_color, multi_run, tk)
-            elif kind == "histogram":
-                self._hist_ax(ax, tag, pairs, multi_run, tk)
-            else:
-                self._scalar_ax(ax, tag, pairs, run_color, smooth, multi_run, tk)
-
-        for k in range(len(tags), rows * cols):
-            axes[k // cols][k % cols].set_visible(False)
-
-        import warnings
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")     # tight_layout text-fit warnings
-            fig.tight_layout()
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", facecolor=fig.get_facecolor())
-        plt.close(fig)
-        return image_escape(buf.getvalue(), height=f"{img_cells}")
-
-    def _scalar_ax(self, ax, tag, pairs, run_color, smooth, multi_run, tk=None):
-        for run_name, s in pairs:
-            if not len(s):
-                continue
-            xs, ys = subsample(s.steps, s.values, self.max_points)
-            color = _HEX_PALETTE[run_color.get(run_name, 0) % len(_HEX_PALETTE)]
-            if smooth > 0:
-                ax.plot(xs, ys, lw=0.7, alpha=0.25, color=color)
-                _, sm = subsample(s.steps, ema(s.values, smooth), self.max_points)
-                ax.plot(xs, sm, lw=1.5, color=color,
-                        label=run_name if multi_run else None)
-            else:
-                ax.plot(xs, ys, lw=1.2, color=color,
-                        label=run_name if multi_run else None)
-        ax.set_title(tag, fontsize=9, **(tk or {}))
-        ax.grid(True, alpha=0.18)
-        ax.tick_params(labelsize=7)
-        if multi_run and pairs:
-            ax.legend(fontsize=7, loc="best")
-
-    def _text_ax(self, ax, tag, pairs, run_color, multi_run, tk=None):
-        ax.set_title(tag, fontsize=9, **(tk or {}))
-        ax.axis("off")
-        parts = []
-        for run_name, s in pairs:
-            if not len(s):
-                continue
-            if multi_run:
-                parts.append(f"[{run_name}]")
-            parts.append(s.texts[-1] if s.texts else "")
-        txt = "\n".join(parts) if parts else "(no text)"
-        ax.text(0.0, 1.0, txt, va="top", ha="left", fontsize=8,
-                family="monospace", wrap=True, transform=ax.transAxes)
-
-    def _hist_ax(self, ax, tag, pairs, multi_run, tk=None):
-        chosen = None
-        for run_name, s in pairs:
-            if len(s):
-                chosen = (run_name, s)
-        if chosen is None:
-            ax.axis("off")
-            return
-        run_name, s = chosen
-        all_edges = [e for (edges, _c) in s.buckets for e in edges]
-        if not all_edges:
-            ax.axis("off")
-            return
-        lo, hi = min(all_edges), max(all_edges)
-        if hi <= lo:
-            hi = lo + 1.0
-        bins = 60
-        idxs = _even_indices(len(s.buckets), 200)
-        mat = []
-        for ci in idxs:
-            edges, counts = s.buckets[ci]
-            mat.append(_rebin(edges, counts, lo, hi, bins))
-        import numpy as np
-        arr = np.array(mat).T[::-1]   # rows: high value at top
-        ax.imshow(arr, aspect="auto", cmap="viridis",
-                  extent=[s.steps[idxs[0]], s.steps[idxs[-1]], lo, hi])
-        title = tag + (f" [{run_name}]" if multi_run else "")
-        ax.set_title(title, fontsize=9, **(tk or {}))
-        ax.tick_params(labelsize=7)
-
-
-def make_renderer(mode: str) -> Renderer:
-    """mode: 'text', 'hq', or 'auto'."""
-    if mode == "hq":
-        return ImageRenderer()
-    if mode == "auto":
-        from .iterm2 import supports_inline_images
-
-        return ImageRenderer() if supports_inline_images() else TextRenderer()
-    return TextRenderer()

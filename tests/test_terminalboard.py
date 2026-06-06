@@ -121,6 +121,60 @@ def test_run_order_cycles(logdir):
         assert base != rotated                            # different top
 
 
+# -- drill-down (focus + detail) ---------------------------------------------
+
+class _FakeScreen:
+    def draw(self, frame, hard=False):
+        pass
+
+
+def _app(logdir):
+    a = App(make_reader(str(logdir)), TextRenderer(), rows=2, cols=2)
+    a.reader.poll()
+    return a
+
+
+def test_focus_navigation(logdir):
+    a = _app(logdir)
+    a._handle_grid_key(_FakeScreen(), None, "RIGHT")
+    assert a._focus == 1
+    a._handle_grid_key(_FakeScreen(), None, "DOWN")
+    assert a._focus == 1 + a.cols
+
+
+def test_detail_text_scroll_and_switch(logdir):
+    a = _app(logdir)
+    a.tag_filter = "note/info"
+    a._handle_grid_key(_FakeScreen(), None, "\r")        # Enter -> detail
+    assert a._detail == "note/info"
+    frame = a._build_detail_frame()
+    assert "note/info" in frame
+    a._handle_detail_key("DOWN")
+    assert a._scroll == 1
+    a._handle_detail_key("RIGHT")                        # switch experiment (wraps)
+    assert a._build_detail_frame().strip()
+    a._handle_detail_key("ESC")                          # back to grid
+    assert a._detail is None
+
+
+def test_detail_histogram_and_scalar(logdir):
+    a = _app(logdir)
+    for tag in ("weights/h", "train/loss"):
+        a.tag_filter = tag
+        a._detail = None
+        a._handle_grid_key(_FakeScreen(), None, "\r")
+        assert a._detail == tag
+        assert a._build_detail_frame().strip()
+        a._handle_detail_key("ESC")
+
+
+def test_detail_quit(logdir):
+    a = _app(logdir)
+    a.tag_filter = "train/loss"
+    a._handle_grid_key(_FakeScreen(), None, "\r")
+    assert a._handle_detail_key("q") == "quit"
+
+
 # -- helpers -----------------------------------------------------------------
 
 def test_shorten_tag():

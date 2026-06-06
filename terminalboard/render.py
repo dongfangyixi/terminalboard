@@ -304,13 +304,21 @@ class Renderer:
     name = "base"
 
     def frame(self, runs, tags, *, smooth=0.0, max_cols=3, width=0, height=0,
-              run_colors=None, run_order=None) -> str:  # pragma: no cover
+              run_colors=None, run_order=None, focus=-1) -> str:  # pragma: no cover
         """Return the rendered body as a single string (no printing).
 
         ``run_colors`` maps run -> stable color index; ``run_order`` is the draw
-        order (last = on top) used for z-order cycling.
+        order (last = on top) used for z-order cycling; ``focus`` is the index of
+        the panel to highlight (-1 = none).
         """
         raise NotImplementedError
+
+
+def _highlight_block(block: List[str]) -> List[str]:
+    """Reverse-video a panel's title line to mark it as focused."""
+    if block:
+        block[0] = "\033[7m" + _ANSI_RE.sub("", block[0]) + "\033[0m"
+    return block
 
 
 class TextRenderer(Renderer):
@@ -325,7 +333,7 @@ class TextRenderer(Renderer):
         self.max_points = max_points
 
     def frame(self, runs, tags, *, smooth=0.0, max_cols=3, width=0, height=0,
-              run_colors=None, run_order=None) -> str:
+              run_colors=None, run_order=None, focus=-1) -> str:
         if not tags:
             return _EMPTY_MSG
         if not width or not height:
@@ -353,15 +361,18 @@ class TextRenderer(Renderer):
             pairs = _pairs(runs, order, tag)
             kind = pairs[0][1].kind if pairs else "scalar"
             if kind == "text":
-                blocks.append(_text_block(tag, pairs, run_color, panel_w,
-                                          panel_h, multi_run))
+                block = _text_block(tag, pairs, run_color, panel_w,
+                                    panel_h, multi_run)
             elif kind == "histogram":
-                blocks.append(_histogram_block(tag, pairs, run_color, panel_w,
-                                               panel_h, multi_run))
+                block = _histogram_block(tag, pairs, run_color, panel_w,
+                                         panel_h, multi_run)
             else:
-                blocks.append(_scalar_block(tag, pairs, run_color, panel_w,
-                                            panel_h, smooth, self.marker,
-                                            self.theme, self.max_points))
+                block = _scalar_block(tag, pairs, run_color, panel_w,
+                                      panel_h, smooth, self.marker,
+                                      self.theme, self.max_points)
+            if idx == focus:
+                block = _highlight_block(block)
+            blocks.append(block)
         body = _tile(blocks, rows, cols, panel_h, gutter)
         if multi_run:
             return run_legend(sorted(runs), run_color, width) + "\n" + body
@@ -378,7 +389,7 @@ class ImageRenderer(Renderer):
         self.max_points = max_points
 
     def frame(self, runs, tags, *, smooth=0.0, max_cols=3, width=0, height=0,
-              run_colors=None, run_order=None) -> str:
+              run_colors=None, run_order=None, focus=-1) -> str:
         import io
 
         import matplotlib
@@ -404,12 +415,13 @@ class ImageRenderer(Renderer):
             ax = axes[i // cols][i % cols]
             pairs = _pairs(runs, order, tag)
             kind = pairs[0][1].kind if pairs else "scalar"
+            tk = {"color": "#FFD54F", "fontweight": "bold"} if i == focus else {}
             if kind == "text":
-                self._text_ax(ax, tag, pairs, run_color, multi_run)
+                self._text_ax(ax, tag, pairs, run_color, multi_run, tk)
             elif kind == "histogram":
-                self._hist_ax(ax, tag, pairs, multi_run)
+                self._hist_ax(ax, tag, pairs, multi_run, tk)
             else:
-                self._scalar_ax(ax, tag, pairs, run_color, smooth, multi_run)
+                self._scalar_ax(ax, tag, pairs, run_color, smooth, multi_run, tk)
 
         for k in range(len(tags), rows * cols):
             axes[k // cols][k % cols].set_visible(False)
@@ -423,7 +435,7 @@ class ImageRenderer(Renderer):
         plt.close(fig)
         return image_escape(buf.getvalue(), height=f"{img_cells}")
 
-    def _scalar_ax(self, ax, tag, pairs, run_color, smooth, multi_run):
+    def _scalar_ax(self, ax, tag, pairs, run_color, smooth, multi_run, tk=None):
         for run_name, s in pairs:
             if not len(s):
                 continue
@@ -437,14 +449,14 @@ class ImageRenderer(Renderer):
             else:
                 ax.plot(xs, ys, lw=1.2, color=color,
                         label=run_name if multi_run else None)
-        ax.set_title(tag, fontsize=9)
+        ax.set_title(tag, fontsize=9, **(tk or {}))
         ax.grid(True, alpha=0.18)
         ax.tick_params(labelsize=7)
         if multi_run and pairs:
             ax.legend(fontsize=7, loc="best")
 
-    def _text_ax(self, ax, tag, pairs, run_color, multi_run):
-        ax.set_title(tag, fontsize=9)
+    def _text_ax(self, ax, tag, pairs, run_color, multi_run, tk=None):
+        ax.set_title(tag, fontsize=9, **(tk or {}))
         ax.axis("off")
         parts = []
         for run_name, s in pairs:
@@ -457,7 +469,7 @@ class ImageRenderer(Renderer):
         ax.text(0.0, 1.0, txt, va="top", ha="left", fontsize=8,
                 family="monospace", wrap=True, transform=ax.transAxes)
 
-    def _hist_ax(self, ax, tag, pairs, multi_run):
+    def _hist_ax(self, ax, tag, pairs, multi_run, tk=None):
         chosen = None
         for run_name, s in pairs:
             if len(s):
@@ -484,7 +496,7 @@ class ImageRenderer(Renderer):
         ax.imshow(arr, aspect="auto", cmap="viridis",
                   extent=[s.steps[idxs[0]], s.steps[idxs[-1]], lo, hi])
         title = tag + (f" [{run_name}]" if multi_run else "")
-        ax.set_title(title, fontsize=9)
+        ax.set_title(title, fontsize=9, **(tk or {}))
         ax.tick_params(labelsize=7)
 
 

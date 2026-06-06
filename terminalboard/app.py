@@ -4,6 +4,7 @@ from __future__ import annotations
 import fnmatch
 import re
 import shutil
+import textwrap
 import time
 from typing import List, Optional
 
@@ -115,7 +116,12 @@ class App:
         # Rotation of the run draw order (z-order); 'o' cycles which run is on top.
         self._order_rot = 0
         self.interval = interval
-        self.page = 0
+        # Cursor over the matching-tags list (drives the focused panel + page).
+        self._focus = 0
+        # Detail (drill-down) state: a tag string when zoomed in, else None.
+        self._detail: Optional[str] = None
+        self._detail_run = 0   # which experiment is shown in detail (text/heatmap)
+        self._scroll = 0       # scroll offset in a text detail view
         # Start at the ladder rung closest to the requested grid's panel count.
         target = max(1, rows) * max(1, cols)
         self._zoom = min(
@@ -154,19 +160,21 @@ class App:
         k = self._order_rot % len(names)
         return names[k:] + names[:k]
 
-    def _page_tags(self, tags: List[str]):
-        per_page = self.cols * self.rows
-        if per_page <= 0:
-            return tags, 1
-        n_pages = max(1, (len(tags) + per_page - 1) // per_page)
-        # Clamp (don't wrap): paging past either end stays on the edge page.
-        self.page = max(0, min(self.page, n_pages - 1))
-        start = self.page * per_page
-        return tags[start:start + per_page], n_pages
+    def _layout(self):
+        """Resolve the focus cursor into (tags, page slice, page idx, n_pages,
+        focus-cell-within-page)."""
+        tags = self._matching_tags()
+        per_page = max(1, self.cols * self.rows)
+        n = len(tags)
+        self._focus = max(0, min(self._focus, max(0, n - 1)))
+        n_pages = max(1, (n + per_page - 1) // per_page)
+        page = self._focus // per_page
+        start = page * per_page
+        return tags, tags[start:start + per_page], page, n_pages, self._focus - start
 
     # -- rendering -----------------------------------------------------------
 
-    def _header(self, tags: List[str], page_tags: List[str], n_pages: int) -> str:
+    def _header(self, tags: List[str], page: int, n_pages: int) -> str:
         n_vis = len(self._visible_runs())
         n_all = len(self.reader.runs)
         runs_str = f"{n_vis}/{n_all}" if self.run_filter else str(n_all)
@@ -176,15 +184,15 @@ class App:
             f"\033[1mterminalboard\033[0m  "
             f"exp={runs_str} (\033[36mf\033[0m:{eflt})  "
             f"tags={len(tags)} (\033[36mt\033[0m:{tflt})  "
-            f"page {self.page + 1}/{n_pages}  "
+            f"page {page + 1}/{n_pages}  "
             f"smooth={self.smooth:.2f}  mode={self.renderer.name}"
         )
 
     def _footer(self) -> str:
         per_page = self.rows * self.cols
         return (
-            "\033[2m[q/Esc]uit  [n/p]page  [f/t]ilter  [z/Z]zoom "
-            f"({per_page}/pg)  [o]rder  [+/-/0]smooth  [r]efresh  [H]elp\033[0m"
+            "\033[2m[arrows]focus [Enter]inspect [n/p]page [f/t]ilter "
+            f"[z/Z]zoom({per_page}) [o]rder [+/-/0]smooth [H]elp [q/Esc]uit\033[0m"
         )
 
     def _prompt_footer(self, label: str, text: str, pos: int, kind: str,
@@ -224,7 +232,8 @@ class App:
         plain = {"A": "UP", "B": "DOWN", "C": "RIGHT", "D": "LEFT",
                  "H": "HOME", "F": "END"}
         wordkey = {"C": "WORD-RIGHT", "D": "WORD-LEFT"}
-        numtilde = {"3": "DEL", "1": "HOME", "7": "HOME", "4": "END", "8": "END"}
+        numtilde = {"3": "DEL", "1": "HOME", "7": "HOME", "4": "END", "8": "END",
+                    "5": "PGUP", "6": "PGDN"}
         tokens = []
         i, n = 0, len(s)
         while i < n:
@@ -276,10 +285,11 @@ class App:
         return tokens
 
     def _build_frame(self, prompt=None) -> str:
+        if self._detail is not None and prompt is None:
+            return self._build_detail_frame()
         cols, rows = shutil.get_terminal_size((100, 30))
-        all_tags = self._matching_tags()
-        page_tags, n_pages = self._page_tags(all_tags)
-        header = self._header(all_tags, page_tags, n_pages)
+        all_tags, page_tags, page, n_pages, focus_cell = self._layout()
+        header = self._header(all_tags, page, n_pages)
         footer = self._prompt_footer(*prompt) if prompt else self._footer()
         # Reserve the header + footer rows; the body must fit the rest so the
         # whole frame is never taller than the terminal (overflow scrolls and
@@ -288,31 +298,85 @@ class App:
             self._visible_runs(), page_tags, smooth=self.smooth, max_cols=self.cols,
             width=cols, height=max(4, rows - 2), run_colors=self._run_colors(),
             run_order=self._run_order(),
+            focus=(-1 if prompt else focus_cell),
         )
         frame = f"{header}\n{body}\n{footer}"
-        # Hard safety crop: never exceed the terminal height. Line wrap is
-        # disabled by the painter, so width takes care of itself.
+        return self._crop(frame, rows)
+
+    @staticmethod
+    def _crop(frame: str, rows: int) -> str:
+        # Hard safety crop: never exceed the terminal height (line wrap is off,
+        # so width takes care of itself).
         lines = frame.split("\n")
-        if len(lines) > rows:
-            lines = lines[:rows]
-        return "\n".join(lines)
+        return "\n".join(lines[:rows])
+
+    # -- detail (drill-down) view -------------------------------------------
+
+    def _detail_runs(self):
+        """Runs (sorted) that have the detail tag."""
+        runs = self._visible_runs()
+        return [n for n in sorted(runs) if self._detail in runs[n].series]
+
+    def _build_detail_frame(self) -> str:
+        cols, rows = shutil.get_terminal_size((100, 30))
+        tag = self._detail
+        runs = self._visible_runs()
+        names = self._detail_runs()
+        if not names:                       # tag vanished (filter/data) — bail out
+            self._detail = None
+            return self._build_frame()
+        kind = runs[names[0]].series[tag].kind
+        body_h = max(2, rows - 2)
+
+        if kind == "text":
+            sel = names[self._detail_run % len(names)]
+            header, body = self._text_detail(tag, sel, len(names), cols, body_h)
+            footer = ("\033[2m↑/↓ scroll · PgUp/PgDn · ←/→ switch exp · "
+                      "Esc back · q quit\033[0m")
+        else:
+            sel = names[self._detail_run % len(names)]
+            order = [n for n in names if n != sel] + [sel]   # selected on top
+            header = (f"\033[1m{tag}\033[0m  [{sel}]  "
+                      f"exp {self._detail_run % len(names) + 1}/{len(names)}  "
+                      f"kind={kind}")
+            body = self.renderer.frame(
+                runs, [tag], smooth=self.smooth, max_cols=1,
+                width=cols, height=body_h, run_colors=self._run_colors(),
+                run_order=order,
+            )
+            switch = "←/→ switch exp · " if (kind == "histogram" and len(names) > 1) else ""
+            footer = f"\033[2m{switch}Esc back · q quit\033[0m"
+        return self._crop(f"{header}\n{body}\n{footer}", rows)
+
+    def _text_detail(self, tag, run_name, n_runs, w, h):
+        series = self._visible_runs()[run_name].series[tag]
+        text = series.texts[-1] if series.texts else ""
+        wrapped: List[str] = []
+        for para in text.split("\n"):
+            wrapped.extend(textwrap.wrap(para, w) or [""])
+        total = len(wrapped)
+        self._scroll = max(0, min(self._scroll, max(0, total - h)))
+        view = wrapped[self._scroll:self._scroll + h]
+        view = view + [""] * (h - len(view))
+        idx = self._detail_run % max(1, n_runs)
+        header = (f"\033[1m{tag}\033[0m  [{run_name}]  exp {idx + 1}/{n_runs}  "
+                  f"lines {self._scroll + 1}–{min(total, self._scroll + h)}/{total}")
+        return header, "\n".join(view)
 
     def _view_sig(self):
-        """The part of the state that changes the *layout* (not just the data).
-
-        When this changes we hard-clear before repainting, so a new page/grid
-        can never leave residue from the previous one.
-        """
-        return (self.page, round(self.smooth, 3), self.rows, self.cols,
+        """Layout-level state — a change here triggers a *hard* clear so a new
+        page/grid/detail can never leave residue. Excludes scroll / exp-switch /
+        in-page focus moves, which repaint softly (no flash)."""
+        per_page = max(1, self.rows * self.cols)
+        page = self._focus // per_page
+        return (page, round(self.smooth, 3), self.rows, self.cols,
                 self.tag_filter, self.run_filter, self.renderer.name,
-                self._order_rot, shutil.get_terminal_size((100, 30)))
+                self._order_rot, self._detail,
+                shutil.get_terminal_size((100, 30)))
 
     def _signature(self):
-        """Cheap fingerprint of everything that affects the rendered frame.
-
-        Repainting only when this changes is what keeps an idle dashboard from
-        flickering — no new data means no redraw at all.
-        """
+        """Everything that affects the frame — a change triggers a (soft or hard)
+        repaint; no change means no repaint, so an idle dashboard never flickers."""
         total = 0
         last_step = 0
         for run in self.reader.runs.values():
@@ -320,7 +384,8 @@ class App:
                 total += len(s)
                 if s.steps:
                     last_step = max(last_step, s.steps[-1])
-        return (total, last_step) + self._view_sig()
+        return (total, last_step, self._focus, self._detail_run,
+                self._scroll) + self._view_sig()
 
     def render_once(self) -> None:
         self.reader.poll()
@@ -355,16 +420,11 @@ class App:
                     if chunk is None:
                         break
                     for tok in self._parse_chunk(chunk):
-                        if tok in ("f", "t"):
-                            self._edit_filter(screen, keys,
-                                              "tags" if tok == "t" else "runs")
-                        elif tok in ("H", "?"):
-                            self._show_help(screen, keys)
-                        elif tok == "ESC":
+                        if self._detail is not None:
+                            if self._handle_detail_key(tok) == "quit":
+                                return
+                        elif self._handle_grid_key(screen, keys, tok):
                             return  # quit
-                        elif len(tok) == 1 and self._handle_key(tok):
-                            return  # quit
-                        # multi-char nav tokens (UP/DOWN/…) do nothing here
                     # A keypress may have changed the view: repaint now, hard-
                     # clearing if the layout changed so no stale plots remain.
                     view = self._view_sig()
@@ -423,7 +483,7 @@ class App:
             if not warn:
                 setattr(self, attr, typed)  # commit -> layout updates live
                 last_valid = typed
-                self.page = 0
+                self._focus = 0
             # When warn: keep the last valid filter committed (layout frozen).
             screen.draw(
                 self._build_frame(prompt=(label, "".join(buf), pos, kind, warn)),
@@ -442,7 +502,7 @@ class App:
                 return
             if key == "ESC":                              # cancel: restore
                 setattr(self, attr, original)
-                self.page = 0
+                self._focus = 0
                 return
             if key in ("\x7f", "\b", "\x08"):             # backspace
                 if pos > 0:
@@ -494,34 +554,87 @@ class App:
                     buf.insert(pos, c)
                     pos += 1
 
-    def _handle_key(self, ch: str) -> bool:
-        """Handle a keypress. Return True to quit."""
-        if ch in ("q", "Q", "\x03", "\x04"):  # q, Ctrl-C, Ctrl-D
+    def _handle_grid_key(self, screen, keys, tok: str) -> bool:
+        """Handle a key in the grid (overview). Return True to quit."""
+        per_page = max(1, self.rows * self.cols)
+        n = len(self._matching_tags())
+        last = max(0, n - 1)
+        if tok in ("f", "t"):
+            self._edit_filter(screen, keys, "tags" if tok == "t" else "runs")
+        elif tok in ("H", "?"):
+            self._show_help(screen, keys)
+        elif tok in ("q", "Q", "\x03", "\x04", "ESC"):
             return True
-        if ch in ("n", " ", "j"):
-            self.page += 1
-        elif ch in ("p", "k"):
-            self.page -= 1
-        elif ch == "r":
-            pass  # falls through to immediate re-render
-        elif ch in ("+", "="):
+        elif tok in ("\r", "\n"):                       # inspect focused panel
+            if n:
+                self._detail = self._matching_tags()[min(self._focus, last)]
+                self._detail_run = 0
+                self._scroll = 0
+        elif tok == "LEFT":
+            self._focus = max(0, self._focus - 1)
+        elif tok == "RIGHT":
+            self._focus = min(last, self._focus + 1)
+        elif tok == "UP":
+            self._focus = max(0, self._focus - self.cols)
+        elif tok == "DOWN":
+            self._focus = min(last, self._focus + self.cols)
+        elif tok in ("n", " ", "j"):                    # page down
+            self._focus = min(last, self._focus + per_page)
+        elif tok in ("p", "k"):                         # page up
+            self._focus = max(0, self._focus - per_page)
+        elif len(tok) == 1:
+            self._handle_view_key(tok)
+        return False
+
+    def _handle_view_key(self, ch: str) -> None:
+        """Smoothing / zoom / z-order — shared view options."""
+        if ch in ("+", "="):
             self.smooth = min(0.99, round(self.smooth + 0.05, 2))
         elif ch == "-":
             self.smooth = max(0.0, round(self.smooth - 0.05, 2))
         elif ch == "0":
             self.smooth = 0.0
         elif ch == "z":
-            # zoom out: more, smaller panels per page
             self._zoom = min(len(_ZOOM_LADDER) - 1, self._zoom + 1)
             self.rows, self.cols = _ZOOM_LADDER[self._zoom]
         elif ch == "Z":
-            # zoom in: fewer, larger panels per page
             self._zoom = max(0, self._zoom - 1)
             self.rows, self.cols = _ZOOM_LADDER[self._zoom]
         elif ch == "o":
-            # cycle which overlapping curve is drawn on top
             self._order_rot += 1
-        return False
+
+    def _handle_detail_key(self, tok: str):
+        """Handle a key in the detail (drill-down) view.
+
+        Returns 'quit' to exit the app, else None (stay / go back to grid)."""
+        if tok in ("q", "Q", "\x03", "\x04"):
+            return "quit"
+        if tok in ("ESC", "\r", "\n"):                  # back to grid
+            self._detail = None
+            self._scroll = 0
+            return None
+        nruns = max(1, len(self._detail_runs()))
+        if tok == "LEFT":
+            self._detail_run = (self._detail_run - 1) % nruns
+            self._scroll = 0
+        elif tok == "RIGHT":
+            self._detail_run = (self._detail_run + 1) % nruns
+            self._scroll = 0
+        elif tok == "UP":
+            self._scroll = max(0, self._scroll - 1)
+        elif tok == "DOWN":
+            self._scroll += 1                           # clamped when rendering
+        elif tok == "PGUP":
+            self._scroll = max(0, self._scroll - 10)
+        elif tok == "PGDN":
+            self._scroll += 10
+        elif tok == "HOME":
+            self._scroll = 0
+        elif tok == "END":
+            self._scroll = 10 ** 9
+        elif len(tok) == 1:
+            self._handle_view_key(tok)                  # smoothing/zoom still work
+        return None
 
     # -- help overlay --------------------------------------------------------
 
@@ -530,9 +643,14 @@ class App:
             "  \033[1mterminalboard\033[0m — help",
             "",
             "  \033[1mNavigation\033[0m",
+            "    ←/↑/↓/→         move focus        Enter        inspect (full screen)",
             "    n / space / j   next page         p / k        previous page",
             "    z / Z           zoom out / in     o            cycle curve order (z)",
             "    r               refresh now       q / Esc      quit",
+            "",
+            "  \033[1mDetail view\033[0m (after Enter)",
+            "    ↑/↓ · PgUp/PgDn  scroll text      ←/→          switch experiment",
+            "    Esc              back to grid     q            quit",
             "",
             "  \033[1mSmoothing\033[0m",
             "    + / =  more      -  less      0  off",

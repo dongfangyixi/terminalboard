@@ -135,6 +135,7 @@ class App:
         self._cursor = 0       # x-cursor index in a scalar detail view
         self.xaxis = "step"    # scalar x-axis: 'step' or 'time' (relative wall)
         self.logy = False      # log-scale y for scalar panels
+        self._textdiff = False  # text detail: show only keys that differ across runs
         # Start at the ladder rung closest to the requested grid's panel count.
         target = max(1, rows) * max(1, cols)
         self._zoom = min(
@@ -344,10 +345,15 @@ class App:
         body_h = max(2, rows - 2)
 
         if kind == "text":
-            sel = names[self._detail_run % len(names)]
-            header, body = self._text_detail(tag, sel, len(names), cols, body_h)
-            footer = ("\033[2m↑/↓ scroll · PgUp/PgDn · ←/→ switch exp · "
-                      "Esc back\033[0m")
+            if self._textdiff and len(names) > 1:
+                header, body = self._text_diff_detail(tag, names, cols, body_h)
+                footer = "\033[2m↑/↓ scroll · d full text · Esc back\033[0m"
+            else:
+                sel = names[self._detail_run % len(names)]
+                header, body = self._text_detail(tag, sel, len(names), cols, body_h)
+                diff = " · d diff" if len(names) > 1 else ""
+                footer = ("\033[2m↑/↓ scroll · PgUp/PgDn · ←/→ switch exp"
+                          f"{diff} · Esc back\033[0m")
         elif kind == "scalar":
             return self._scalar_detail(tag, names, cols, rows, body_h)
         else:                                            # histogram
@@ -450,18 +456,59 @@ class App:
                   "+/- smooth · x axis · l log · Esc back\033[0m")
         return self._crop("\n".join([header, plot] + readout + [footer]), rows)
 
+    def _scroll_view(self, lines, w, h):
+        """Clamp self._scroll and return (h fitted lines, total)."""
+        total = len(lines)
+        self._scroll = max(0, min(self._scroll, max(0, total - h)))
+        view = [l for l in lines[self._scroll:self._scroll + h]]
+        view += [""] * (h - len(view))
+        return view, total
+
     def _text_detail(self, tag, run_name, n_runs, w, h):
         series = self._visible_runs()[run_name].series[tag]
         text = series.texts[-1] if series.texts else ""
         wrapped: List[str] = []
         for para in text.split("\n"):
             wrapped.extend(textwrap.wrap(para, w) or [""])
-        total = len(wrapped)
-        self._scroll = max(0, min(self._scroll, max(0, total - h)))
-        view = wrapped[self._scroll:self._scroll + h]
-        view = view + [""] * (h - len(view))
+        view, total = self._scroll_view(wrapped, w, h)
         idx = self._detail_run % max(1, n_runs)
         header = (f"\033[1m{tag}\033[0m  [{run_name}]  exp {idx + 1}/{n_runs}  "
+                  f"lines {self._scroll + 1}–{min(total, self._scroll + h)}/{total}")
+        return header, "\n".join(view)
+
+    @staticmethod
+    def _parse_kv(text):
+        """Pull key→value pairs from config-ish text (JSON / `k: v` / `k = v`)."""
+        d = {}
+        for line in text.splitlines():
+            line = line.strip().rstrip(",")
+            m = re.match(r'^"?([\w./\- ]+?)"?\s*[:=]\s*(.+)$', line)
+            if m:
+                d[m.group(1).strip()] = m.group(2).strip()
+        return d
+
+    def _text_diff_detail(self, tag, names, w, h):
+        from .render import _RUN_STYLES
+        runs = self._visible_runs()
+        rc = self._run_colors()
+        parsed = {n: self._parse_kv(runs[n].series[tag].texts[-1]
+                                    if runs[n].series[tag].texts else "")
+                  for n in names}
+        keys = sorted({k for d in parsed.values() for k in d})
+        lines: List[str] = []
+        for k in keys:
+            vals = [parsed[n].get(k, "—") for n in names]
+            if len(set(vals)) <= 1:
+                continue                                # identical → not a diff
+            lines.append(f"\033[1m{k}\033[0m")
+            for n in names:
+                code = _RUN_STYLES[rc.get(n, 0) % len(_RUN_STYLES)][1]
+                lines.append(f"  \033[{code}m●\033[0m {n[:18]:<18} "
+                             f"{parsed[n].get(k, '—')}")
+        if not lines:
+            lines = ["(no differing keys — configs are identical, or not key:value)"]
+        view, total = self._scroll_view(lines, w, h)
+        header = (f"\033[1m{tag}\033[0m  diff across {len(names)} experiments  "
                   f"lines {self._scroll + 1}–{min(total, self._scroll + h)}/{total}")
         return header, "\n".join(view)
 
@@ -487,7 +534,7 @@ class App:
                 if s.steps:
                     last_step = max(last_step, s.steps[-1])
         return (total, last_step, self._focus, self._detail_run,
-                self._scroll, self._cursor) + self._view_sig()
+                self._scroll, self._cursor, self._textdiff) + self._view_sig()
 
     def render_once(self) -> None:
         self.reader.poll()
@@ -767,6 +814,9 @@ class App:
             elif tok == "RIGHT":
                 self._detail_run = (self._detail_run + 1) % nruns
                 self._scroll = 0
+            elif tok == "d":                            # toggle config-diff
+                self._textdiff = not self._textdiff
+                self._scroll = 0
             elif len(tok) == 1:
                 self._handle_view_key(tok)
         else:                                           # histogram: ←/→ switch exp
@@ -793,7 +843,7 @@ class App:
             "",
             "  \033[1mDetail view\033[0m (after Enter)",
             "    curve:  ←/→ move cursor (value/step/time readout) · Shift+←/→ fast",
-            "    text:   ↑/↓ · PgUp/PgDn scroll · ←/→ switch experiment",
+            "    text:   ↑/↓ · PgUp/PgDn scroll · ←/→ switch experiment · d diff",
             "    histogram:  ←/→ switch experiment",
             "    Esc     back to grid (Esc again to quit)",
             "",

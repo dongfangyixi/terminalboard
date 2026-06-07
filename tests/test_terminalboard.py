@@ -194,6 +194,35 @@ def test_scalar_detail_cursor(logdir):
     assert "cursor @ step" in frame and "value" in frame and "smoothed" in frame
 
 
+def test_config_diff(tmp_path):
+    # two runs whose config differs in one key
+    import conftest as C
+    for name, lr in [("a", "0.001"), ("b", "0.003")]:
+        d = tmp_path / name
+        d.mkdir()
+        cfg = '{\n  "lr": %s,\n  "model": "resnet"\n}' % lr
+        C.write_events(d / "events.out.tfevents.1.h.1.0",
+                       [(0, [C.text_value("config", cfg)])])
+    a = App(make_reader(str(tmp_path)), TextRenderer())
+    a.reader.poll()
+    a.tag_filter = "config"
+    a._handle_grid_key(_FakeScreen(), None, "\r")
+    a._handle_detail_key("d")                       # toggle diff
+    frame = a._build_detail_frame()
+    assert "diff across 2 experiments" in frame
+    assert "lr" in frame and "0.001" in frame and "0.003" in frame
+    assert "model" not in frame                     # identical key is hidden
+
+
+def test_logy_and_xaxis_toggle(logdir):
+    a = _app(logdir)
+    a._handle_view_key("l")
+    assert a.logy is True
+    a._handle_view_key("x")
+    assert a.xaxis == "time"
+    assert a._build_frame().strip()                 # renders without error
+
+
 def test_detail_q_does_not_quit_esc_goes_back(logdir):
     a = _app(logdir)
     a.tag_filter = "train/loss"

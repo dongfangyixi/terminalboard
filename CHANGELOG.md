@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **Log-Y** (`l`) and **x-axis step↔time** (`x`) toggles for scalar panels.
+- **Config diff** in the text detail view (`d`): show only the config keys that
+  differ across experiments.
+- **CSV export** (`w`): write the focused scalar tag to `<tag>.csv`.
+- **Config file** (`~/.config/terminalboard.toml` / `$TERMINALBOARD_CONFIG`) for
+  defaults (smooth, grid, interval, tags, experiments, xaxis, logy, tb).
+- Bundled **demo generator** (`examples/gen_demo_logs.py`) and a **GIF recording
+  script** (`scripts/record_demo.sh`); `uvx`/`pipx run` note in the README.
+
 ## 0.2.1
 
 ### Fixed / changed

@@ -149,14 +149,21 @@ A page can mix any of these — the panel adapts to each tag's kind:
 | `o` | cycle which overlapping curve is drawn on top (z-order) |
 | `z` / `Z` | zoom out / in — panels per page: `1·2·4·6·9·12·16·24·36` |
 | `+` / `-` / `0` | more / less / no smoothing |
+| `x` / `l` | x-axis step↔time / toggle log-Y (scalars) |
+| `w` | export the focused scalar tag to a CSV |
 | `r` | refresh now |
 | `H` / `?` | full help overlay |
 | `q` / `Esc` | quit |
 
 **Detail view** (after `Enter`): a single tag full-screen. **`Esc`** returns to
-the grid. By type: **scalars** overlay all experiments; **histograms** show one
-experiment (`←/→` switches); **text** is scrollable (`↑/↓`, `PgUp/PgDn`,
-`Home/End`) with `←/→` to switch experiment.
+the grid. By type:
+- **scalars** overlay all experiments, with a **cursor** — `←/→` move it one data
+  point (`Shift+←/→` fast), and a per-experiment **value / smoothed / step /
+  wall-time** readout updates beneath the plot. `x`/`l` change axis/scale.
+- **histograms** show one experiment as a heatmap (`←/→` switches).
+- **text** is scrollable (`↑/↓`, `PgUp/PgDn`, `Home/End`), `←/→` switch
+  experiment, and **`d`** shows a **config diff** — only the keys that differ
+  across experiments.
 
 In the filter prompt: **←/→** move, **↑/↓** recall history, **Home/End** (or
 `^A`/`^E`), **^W** delete word, **^K** kill-to-end, **^U** clear, **Alt/Ctrl+←/→**
@@ -211,6 +218,23 @@ until you fix or cancel it.
     │  ⡴⠲⠒⠉⠉⠉⠉⠉⠁                                                               │
     └┬─────────────────┬──────────────────┬─────────────────┬─────────────────┬┘
     10               1510               3010              4510             6010
+```
+
+## Config file
+
+Set defaults in `~/.config/terminalboard.toml` (or point `$TERMINALBOARD_CONFIG`
+at a file). CLI flags override it. Needs Python 3.11+ (`tomllib`) or `tomli`.
+
+```toml
+[terminalboard]
+smooth = 0.6
+grid = "2x3"
+interval = 2.0
+xaxis = "step"   # or "time"
+logy = false
+tags = "train/*"
+# experiments = "baseline | scaling"
+# tb = true
 ```
 
 ## Roadmap

@@ -114,6 +114,7 @@ class App:
         interval: float = 2.0,
         xaxis: str = "step",
         logy: bool = False,
+        csv_dir: str = "",
     ):
         self.reader = reader
         self.renderer = renderer
@@ -139,6 +140,7 @@ class App:
         self.logy = bool(logy)  # log-scale y for scalar panels
         self._textdiff = False  # text detail: show only keys that differ across runs
         self._status = ""       # transient status line (e.g. after CSV export)
+        self._csv_dir = csv_dir  # default folder pre-filled in the CSV save prompt
         # Start at the ladder rung closest to the requested grid's panel count.
         target = max(1, rows) * max(1, cols)
         self._zoom = min(
@@ -221,6 +223,9 @@ class App:
             shown = text[:pos] + "\033[7m" + text[pos] + "\033[0m" + text[pos + 1:]
         else:
             shown = text + "\033[7m \033[0m"
+        if kind not in ("tags", "runs"):                  # generic input prompt
+            return (f"\033[1m{label}>\033[0m {shown}  "
+                    "\033[2m(Enter save · Esc cancel)\033[0m")
         if warn:
             status = "\033[1;31m✗ no matches — pattern not applied\033[0m"
         else:
@@ -341,8 +346,25 @@ class App:
         tags = self._matching_tags()
         return tags[self._focus] if tags and self._focus < len(tags) else None
 
-    def _export_csv(self) -> str:
-        """Write the focused/detail scalar tag to a CSV in the cwd."""
+    def _csv_default_path(self, tag: str) -> str:
+        """Default save path: <csv_dir>/<sanitized-tag>.csv (csv_dir from config)."""
+        import os
+        name = tag.strip("/").replace("/", "_") + ".csv"
+        base = os.path.expanduser(self._csv_dir) if self._csv_dir else ""
+        return os.path.join(base, name) if base else name
+
+    def _do_csv(self, screen, keys) -> None:
+        """Prompt for a path (pre-filled from config) and export the focused tag."""
+        tag = self._current_tag()
+        if not tag:
+            self._status = "nothing to export"
+            return
+        path = self._input_prompt(screen, keys, "save CSV",
+                                  self._csv_default_path(tag))
+        self._status = "" if path is None else self._export_csv(path)
+
+    def _export_csv(self, path: Optional[str] = None) -> str:
+        """Write the focused/detail scalar tag to ``path`` (default if None)."""
         import csv
         import os
         tag = self._current_tag()
@@ -356,8 +378,11 @@ class App:
         lut = {n: dict(zip(runs[n].series[tag].steps, runs[n].series[tag].values))
                for n in names}
         steps = sorted({s for n in names for s in lut[n]})
-        path = os.path.abspath(tag.strip("/").replace("/", "_") + ".csv")
+        path = os.path.expanduser(path or self._csv_default_path(tag))
         try:
+            parent = os.path.dirname(path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
             with open(path, "w", newline="") as f:
                 w = csv.writer(f)
                 w.writerow(["step"] + names)
@@ -365,7 +390,70 @@ class App:
                     w.writerow([s] + [lut[n].get(s, "") for n in names])
         except OSError as e:
             return f"export failed: {e}"
-        return f"✓ wrote {os.path.basename(path)} ({len(steps)} rows)"
+        return f"✓ wrote {path} ({len(steps)} rows)"
+
+    def _input_prompt(self, screen, keys, label, initial):
+        """Modal single-line text input (returns the string, or None on Esc)."""
+        buf = list(initial or "")
+        pos = len(buf)
+        pending = []
+
+        def next_key():
+            nonlocal pending
+            if not pending:
+                chunk = keys.get(30)
+                if chunk is None:
+                    return None
+                if chunk == "\x1b":
+                    more = keys.get(0.03)
+                    if more:
+                        chunk += more
+                pending = self._parse_chunk(chunk)
+            return pending.pop(0) if pending else None
+
+        while True:
+            screen.draw(self._build_frame(
+                prompt=(label, "".join(buf), pos, "input", False)), hard=True)
+            key = next_key()
+            if key is None:
+                continue
+            if key in ("\r", "\n"):
+                return "".join(buf).strip()
+            if key in ("\x03", "\x04", "ESC"):
+                return None
+            if key in ("\x7f", "\b", "\x08"):
+                if pos > 0:
+                    del buf[pos - 1]
+                    pos -= 1
+            elif key == "DEL":
+                if pos < len(buf):
+                    del buf[pos]
+            elif key == "LEFT":
+                pos = max(0, pos - 1)
+            elif key == "RIGHT":
+                pos = min(len(buf), pos + 1)
+            elif key in ("HOME", "\x01"):
+                pos = 0
+            elif key in ("END", "\x05"):
+                pos = len(buf)
+            elif key == "\x15":
+                buf, pos = [], 0
+            elif key == "\x0b":
+                del buf[pos:]
+            elif key == "WORD-LEFT":
+                pos = _prev_word(buf, pos)
+            elif key == "WORD-RIGHT":
+                pos = _next_word(buf, pos)
+            elif key in ("WORD-DEL-BACK", "\x17"):
+                start = _prev_word(buf, pos)
+                del buf[start:pos]
+                pos = start
+            elif key == "WORD-DEL-FWD":
+                del buf[pos:_next_word(buf, pos)]
+            elif isinstance(key, str) and key.isprintable():
+                for c in key:
+                    buf.insert(pos, c)
+                    pos += 1
 
     # -- detail (drill-down) view -------------------------------------------
 
@@ -612,7 +700,7 @@ class App:
                         break
                     for tok in self._parse_chunk(chunk):
                         if self._detail is not None:
-                            if self._handle_detail_key(tok) == "quit":
+                            if self._handle_detail_key(screen, keys, tok) == "quit":
                                 return
                         elif self._handle_grid_key(screen, keys, tok):
                             return  # quit
@@ -753,7 +841,7 @@ class App:
         n = len(self._matching_tags())
         last = max(0, n - 1)
         if tok == "w":
-            self._status = self._export_csv()
+            self._do_csv(screen, keys)
         elif tok in ("f", "t"):
             self._edit_filter(screen, keys, "tags" if tok == "t" else "runs")
         elif tok in ("H", "?"):
@@ -806,7 +894,7 @@ class App:
         elif ch == "x":
             self.xaxis = "time" if self.xaxis == "step" else "step"
 
-    def _handle_detail_key(self, tok: str):
+    def _handle_detail_key(self, screen, keys, tok: str):
         """Handle a key in the detail (drill-down) view.
 
         Returns 'quit' only on Ctrl-C/Ctrl-D; Esc just goes *back* to the grid
@@ -820,7 +908,7 @@ class App:
             self._scroll = 0
             return None
         if tok == "w":
-            self._status = self._export_csv()
+            self._do_csv(screen, keys)
             return None
         names = self._detail_runs()
         if not names:

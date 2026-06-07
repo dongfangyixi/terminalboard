@@ -235,7 +235,11 @@ logy = false
 tags = "train/*"
 # experiments = "baseline | scaling"
 # tb = true
+# csv_dir = "~/tb-exports"   # pre-filled folder in the CSV save (w) prompt
 ```
+
+`w` opens a path prompt pre-filled with `<csv_dir>/<tag>.csv` (editable; Enter
+saves, Esc cancels).
 
 ## Roadmap
 

@@ -80,13 +80,15 @@ def _record(payload):
             + payload + struct.pack("<I", _mask(payload)))
 
 
-def write_run(path, records):
+def write_run(path, records, sps=12.0, base=1_700_000_000.0):
+    # sps = wall-clock seconds per step, so the x-axis 'time' mode differs from
+    # 'step' (and runs at different speeds look different on the time axis).
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "wb") as f:
-        fv = _key(1, 1) + struct.pack("<d", 1000.0) + _ld(3, b"brain.Event:2")
+        fv = _key(1, 1) + struct.pack("<d", base) + _ld(3, b"brain.Event:2")
         f.write(_record(fv))
         for step, values in records:
-            f.write(_record(_event(step, 1000.0 + step, values)))
+            f.write(_record(_event(step, base + step * sps, values)))
 
 
 # --- a deterministic pseudo-random (no imports / reproducible) --------------
@@ -164,9 +166,10 @@ def make_records(name):
 
 def main():
     out = os.path.abspath("demo_logs")
+    sps = {"baseline": 12.0, "high_lr": 9.0, "ablation_nodropout": 15.0}
     for name in EXPERIMENTS:
         path = os.path.join(out, name, "events.out.tfevents.1700000000.demo.1.0")
-        write_run(path, make_records(name))
+        write_run(path, make_records(name), sps=sps.get(name, 12.0))
     print(f"Wrote {len(EXPERIMENTS)} runs to {out}/")
     print("Scalars: train/loss, train/accuracy, val/loss, val/accuracy, "
           "train/lr, train/grad_norm, system/gpu_mem_gb (flat)")

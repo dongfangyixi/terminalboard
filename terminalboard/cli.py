@@ -140,6 +140,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         tag_filter=args.tags, run_filter=args.experiments, smooth=args.smooth,
         rows=rows, cols=cols, interval=args.interval,
         xaxis=str(cfg.get("xaxis", "step")), logy=bool(cfg.get("logy", False)),
+        csv_dir=str(cfg.get("csv_dir", "")),
     )
     try:
         app.run(once=args.once)

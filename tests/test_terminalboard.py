@@ -159,11 +159,11 @@ def test_detail_text_scroll_and_switch(logdir):
     assert a._detail == "note/info"
     frame = a._build_detail_frame()
     assert "note/info" in frame
-    a._handle_detail_key("DOWN")
+    a._handle_detail_key(_FakeScreen(), None, "DOWN")
     assert a._scroll == 1
-    a._handle_detail_key("RIGHT")                        # switch experiment (wraps)
+    a._handle_detail_key(_FakeScreen(), None, "RIGHT")                        # switch experiment (wraps)
     assert a._build_detail_frame().strip()
-    a._handle_detail_key("ESC")                          # back to grid
+    a._handle_detail_key(_FakeScreen(), None, "ESC")                          # back to grid
     assert a._detail is None
 
 
@@ -175,7 +175,7 @@ def test_detail_histogram_and_scalar(logdir):
         a._handle_grid_key(_FakeScreen(), None, "\r")
         assert a._detail == tag
         assert a._build_detail_frame().strip()
-        a._handle_detail_key("ESC")
+        a._handle_detail_key(_FakeScreen(), None, "ESC")
 
 
 def test_scalar_detail_cursor(logdir):
@@ -184,11 +184,11 @@ def test_scalar_detail_cursor(logdir):
     a._handle_grid_key(_FakeScreen(), None, "\r")
     track = a._scalar_track("train/loss", a._detail_runs())
     assert a._cursor == len(track) - 1           # starts at the latest point
-    a._handle_detail_key("LEFT")
+    a._handle_detail_key(_FakeScreen(), None, "LEFT")
     assert a._cursor == len(track) - 2
-    a._handle_detail_key("HOME")
+    a._handle_detail_key(_FakeScreen(), None, "HOME")
     assert a._cursor == 0
-    a._handle_detail_key("END")
+    a._handle_detail_key(_FakeScreen(), None, "END")
     assert a._cursor == len(track) - 1
     frame = a._build_detail_frame()
     assert "cursor @ step" in frame and "value" in frame and "smoothed" in frame
@@ -207,7 +207,7 @@ def test_config_diff(tmp_path):
     a.reader.poll()
     a.tag_filter = "config"
     a._handle_grid_key(_FakeScreen(), None, "\r")
-    a._handle_detail_key("d")                       # toggle diff
+    a._handle_detail_key(_FakeScreen(), None, "d")                       # toggle diff
     frame = a._build_detail_frame()
     assert "diff across 2 experiments" in frame
     assert "lr" in frame and "0.001" in frame and "0.003" in frame
@@ -231,6 +231,26 @@ def test_csv_export_skips_nonscalar(logdir, tmp_path, monkeypatch):
     a = _app(logdir)
     a.tag_filter = "note/info"          # a text tag
     assert "not a scalar" in a._export_csv()
+
+
+def test_csv_prompt_uses_csv_dir(logdir, tmp_path):
+    out = tmp_path / "out"
+    a = App(make_reader(str(logdir)), TextRenderer(), csv_dir=str(out))
+    a.reader.poll()
+    a.tag_filter = "train/loss"
+    assert a._csv_default_path("train/loss") == str(out / "train_loss.csv")
+
+    class _Keys:
+        def __init__(self, seq):
+            self.q = list(seq)
+
+        def get(self, _t):
+            return self.q.pop(0) if self.q else None
+
+    a._do_csv(_FakeScreen(), _Keys(["\r"]))            # accept default
+    assert (out / "train_loss.csv").exists()
+    a._do_csv(_FakeScreen(), _Keys(["\x1b"]))          # Esc cancels
+    assert a._status == ""
 
 
 def test_config_load(tmp_path, monkeypatch):
@@ -257,9 +277,9 @@ def test_detail_q_does_not_quit_esc_goes_back(logdir):
     a.tag_filter = "train/loss"
     a._handle_grid_key(_FakeScreen(), None, "\r")
     assert a._detail == "train/loss"
-    assert a._handle_detail_key("q") is None      # q does nothing in detail
+    assert a._handle_detail_key(_FakeScreen(), None, "q") is None      # q does nothing in detail
     assert a._detail == "train/loss"              # still in detail
-    a._handle_detail_key("ESC")                   # Esc -> back to grid
+    a._handle_detail_key(_FakeScreen(), None, "ESC")                   # Esc -> back to grid
     assert a._detail is None
     # and from the grid, Esc quits
     assert a._handle_grid_key(_FakeScreen(), None, "ESC") is True

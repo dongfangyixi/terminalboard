@@ -167,8 +167,16 @@ def _pairs(runs, order, tag):
 
 # --- panel widgets ----------------------------------------------------------
 
+def _xs(s, xaxis):
+    """X values for a scalar series: by step, or relative wall-time (seconds)."""
+    if xaxis == "time" and getattr(s, "wall_times", None):
+        t0 = s.wall_times[0]
+        return [wt - t0 for wt in s.wall_times]
+    return s.steps
+
+
 def _scalar_block(tag, pairs, run_color, w, h, smooth, marker, theme,
-                  max_points, cursor=None) -> List[str]:
+                  max_points, cursor=None, xaxis="step", logy=False) -> List[str]:
     import plotext as plt
 
     _reset_plotext(plt)
@@ -178,15 +186,21 @@ def _scalar_block(tag, pairs, run_color, w, h, smooth, marker, theme,
     for run_name, s in pairs:
         if not len(s):
             continue
-        xs, ys = subsample(s.steps, ema(s.values, smooth), max_points)
+        xs, ys = subsample(_xs(s, xaxis), ema(s.values, smooth), max_points)
         color = _PALETTE[run_color.get(run_name, 0) % len(_PALETTE)]
         plt.plot(xs, ys, marker=marker, color=color)   # draw order = z-order
         if ys:
             lo, hi = min(ys), max(ys)
             vmin = lo if vmin is None else min(vmin, lo)
             vmax = hi if vmax is None else max(vmax, hi)
+    do_log = logy and vmin is not None and vmin > 0   # log needs positive values
+    if do_log:
+        try:
+            plt.yscale("log")
+        except Exception:
+            do_log = False
     # A flat series gives plotext a zero-height axis whose tick search can hang.
-    if vmin is not None and (vmax - vmin) <= abs(vmin) * 1e-9 + 1e-12:
+    if not do_log and vmin is not None and (vmax - vmin) <= abs(vmin) * 1e-9 + 1e-12:
         pad = abs(vmin) * 0.5 or 1.0
         plt.ylim(vmin - pad, vmax + pad)
     if cursor is not None:
@@ -330,7 +344,8 @@ class TextRenderer(Renderer):
         self.max_points = max_points
 
     def frame(self, runs, tags, *, smooth=0.0, max_cols=3, width=0, height=0,
-              run_colors=None, run_order=None, focus=-1) -> str:
+              run_colors=None, run_order=None, focus=-1, xaxis="step",
+              logy=False) -> str:
         if not tags:
             return _EMPTY_MSG
         if not width or not height:
@@ -366,7 +381,8 @@ class TextRenderer(Renderer):
             else:
                 block = _scalar_block(tag, pairs, run_color, panel_w,
                                       panel_h, smooth, self.marker,
-                                      self.theme, self.max_points)
+                                      self.theme, self.max_points,
+                                      xaxis=xaxis, logy=logy)
             if idx == focus:
                 block = _highlight_block(block)
             blocks.append(block)
@@ -376,9 +392,11 @@ class TextRenderer(Renderer):
         return body
 
     def detail_scalar(self, runs, tag, *, order, run_color, w, h, smooth,
-                      cursor_step) -> str:
-        """Full-screen scalar plot with a vertical cursor at ``cursor_step``."""
+                      cursor_x, xaxis="step", logy=False) -> str:
+        """Full-screen scalar plot with a vertical cursor at ``cursor_x`` (in the
+        active x-axis domain)."""
         pairs = _pairs(runs, order, tag)
         block = _scalar_block(tag, pairs, run_color, w, h, smooth, self.marker,
-                              self.theme, self.max_points, cursor=cursor_step)
+                              self.theme, self.max_points, cursor=cursor_x,
+                              xaxis=xaxis, logy=logy)
         return "\n".join(block)

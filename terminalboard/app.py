@@ -133,6 +133,8 @@ class App:
         self._detail_run = 0   # which experiment is shown in detail (text/heatmap)
         self._scroll = 0       # scroll offset in a text detail view
         self._cursor = 0       # x-cursor index in a scalar detail view
+        self.xaxis = "step"    # scalar x-axis: 'step' or 'time' (relative wall)
+        self.logy = False      # log-scale y for scalar panels
         # Start at the ladder rung closest to the requested grid's panel count.
         target = max(1, rows) * max(1, cols)
         self._zoom = min(
@@ -196,14 +198,16 @@ class App:
             f"exp={runs_str} (\033[36mf\033[0m:{eflt})  "
             f"tags={len(tags)} (\033[36mt\033[0m:{tflt})  "
             f"page {page + 1}/{n_pages}  "
-            f"smooth={self.smooth:.2f}  mode={self.renderer.name}"
+            f"smooth={self.smooth:.2f}  x={self.xaxis}  "
+            f"y={'log' if self.logy else 'lin'}"
         )
 
     def _footer(self) -> str:
         per_page = self.rows * self.cols
         return (
             "\033[2m[arrows]focus [Enter]inspect [n/p]page [f/t]ilter "
-            f"[z/Z]zoom({per_page}) [o]rder [+/-/0]smooth [H]elp [q/Esc]uit\033[0m"
+            f"[z/Z]zoom({per_page}) [o]rder [+/-/0]smooth [x]axis [l]og "
+            "[H]elp [q/Esc]uit\033[0m"
         )
 
     def _prompt_footer(self, label: str, text: str, pos: int, kind: str,
@@ -308,7 +312,7 @@ class App:
         body = self.renderer.frame(
             self._visible_runs(), page_tags, smooth=self.smooth, max_cols=self.cols,
             width=cols, height=max(4, rows - 2), run_colors=self._run_colors(),
-            run_order=self._run_order(),
+            run_order=self._run_order(), xaxis=self.xaxis, logy=self.logy,
             focus=(-1 if prompt else focus_cell),
         )
         frame = f"{header}\n{body}\n{footer}"
@@ -374,10 +378,19 @@ class App:
         h, m = divmod(m, 60)
         return f"+{h}h{m:02d}m"
 
-    def _scalar_track(self, tag, names) -> List[int]:
-        """Cursor stops = every real data step (so ←/→ moves one point)."""
+    def _primary_run(self, tag, names):
+        """The on-top run (last in draw order) that has data for ``tag``."""
         runs = self._visible_runs()
-        return sorted({st for n in names for st in runs[n].series[tag].steps})
+        order = [n for n in self._run_order() if n in names]
+        for n in reversed(order):
+            if runs[n].series[tag].steps:
+                return n
+        return names[0] if names else None
+
+    def _scalar_track(self, tag, names) -> List[int]:
+        """Cursor stops = the primary run's real steps (←/→ moves one point)."""
+        n = self._primary_run(tag, names)
+        return list(self._visible_runs()[n].series[tag].steps) if n else []
 
     def _nearest_index(self, steps, target) -> int:
         i = bisect.bisect_left(steps, target)
@@ -416,15 +429,25 @@ class App:
                 f"value {val:< 12.5g} smoothed {sm:< 12.5g}{rt}"
             )
 
+        # Cursor x in the active axis domain (so the vertical line lands right).
+        if self.xaxis == "time":
+            ps = runs[self._primary_run(tag, names)].series[tag]
+            cx = (ps.wall_times[self._cursor] - ps.wall_times[0]
+                  if ps.wall_times and self._cursor < len(ps.wall_times) else cstep)
+        else:
+            cx = cstep
+
         plot_h = max(2, body_h - len(readout))
         plot = self.renderer.detail_scalar(
             runs, tag, order=self._run_order(), run_color=rc,
-            w=cols, h=plot_h, smooth=self.smooth, cursor_step=cstep,
+            w=cols, h=plot_h, smooth=self.smooth, cursor_x=cx,
+            xaxis=self.xaxis, logy=self.logy,
         )
+        axes = f"x={self.xaxis} y={'log' if self.logy else 'lin'}"
         header = (f"\033[1m{tag}\033[0m  cursor @ step {cstep}  "
-                  f"({self._cursor + 1}/{len(track)})  exps={len(names)}")
+                  f"({self._cursor + 1}/{len(track)})  exps={len(names)}  {axes}")
         footer = ("\033[2m←/→ cursor · Shift+←/→ fast · Home/End · "
-                  "+/- smooth · Esc back\033[0m")
+                  "+/- smooth · x axis · l log · Esc back\033[0m")
         return self._crop("\n".join([header, plot] + readout + [footer]), rows)
 
     def _text_detail(self, tag, run_name, n_runs, w, h):
@@ -450,7 +473,7 @@ class App:
         page = self._focus // per_page
         return (page, round(self.smooth, 3), self.rows, self.cols,
                 self.tag_filter, self.run_filter, self.renderer.name,
-                self._order_rot, self._detail,
+                self._order_rot, self._detail, self.xaxis, self.logy,
                 shutil.get_terminal_size((100, 30)))
 
     def _signature(self):
@@ -685,6 +708,10 @@ class App:
             self.rows, self.cols = _ZOOM_LADDER[self._zoom]
         elif ch == "o":
             self._order_rot += 1
+        elif ch == "l":
+            self.logy = not self.logy
+        elif ch == "x":
+            self.xaxis = "time" if self.xaxis == "step" else "step"
 
     def _handle_detail_key(self, tok: str):
         """Handle a key in the detail (drill-down) view.
@@ -761,6 +788,7 @@ class App:
             "    ←/↑/↓/→         move focus        Enter        inspect (full screen)",
             "    n / space / j   next page         p / k        previous page",
             "    z / Z           zoom out / in     o            cycle curve order (z)",
+            "    x               x-axis step/time  l            toggle log-y",
             "    r               refresh now       q / Esc      quit",
             "",
             "  \033[1mDetail view\033[0m (after Enter)",

@@ -27,3 +27,7 @@ env/
 # working folder), but ignore them too in case any get dropped in here.
 tb_logs/
 *.tfevents.*
+
+# Generated demo artifacts
+demo_logs/
+*.cast

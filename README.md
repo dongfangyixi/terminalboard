@@ -71,6 +71,7 @@ so the whole thing is pure text with no browser or image protocol needed.
 ```bash
 pip install terminalboard            # everything you need by default
 pip install 'terminalboard[tb]'      # + tensorboard (--tb alternate parser)
+uvx terminalboard <logdir>           # or run without installing (uv) / pipx run terminalboard
 ```
 
 The base install pulls only `plotext` and is fully functional on its own — the
@@ -107,6 +108,19 @@ terminalboard LOGDIR [options]
   --once              render a single frame and exit
   --list              list all tags and exit
 ```
+
+### Try it without your own logs
+
+The repo ships a generator that writes a demo logdir with 3 experiments and
+every supported type (scalars, text, histograms):
+
+```bash
+python examples/gen_demo_logs.py     # writes ./demo_logs/
+terminalboard demo_logs
+```
+
+A demo recording can be produced with `scripts/record_demo.sh` (needs
+[`asciinema`](https://asciinema.org/) + [`agg`](https://github.com/asciinema/agg)).
 
 ```bash
 terminalboard ../tb_logs                       # live dashboard

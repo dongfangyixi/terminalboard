@@ -214,6 +214,35 @@ def test_config_diff(tmp_path):
     assert "model" not in frame                     # identical key is hidden
 
 
+def test_csv_export(logdir, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    a = _app(logdir)
+    a.tag_filter = "train/loss"
+    msg = a._export_csv()
+    assert "wrote" in msg
+    f = tmp_path / "train_loss.csv"
+    assert f.exists()
+    lines = f.read_text().splitlines()
+    assert lines[0].startswith("step,") and len(lines) > 1
+
+
+def test_csv_export_skips_nonscalar(logdir, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    a = _app(logdir)
+    a.tag_filter = "note/info"          # a text tag
+    assert "not a scalar" in a._export_csv()
+
+
+def test_config_load(tmp_path, monkeypatch):
+    pytest.importorskip("tomllib")      # stdlib on 3.11+
+    cfg = tmp_path / "c.toml"
+    cfg.write_text('[terminalboard]\nsmooth = 0.9\ngrid = "3x3"\nlogy = true\n')
+    monkeypatch.setenv("TERMINALBOARD_CONFIG", str(cfg))
+    from terminalboard.cli import load_config
+    c = load_config()
+    assert c["smooth"] == 0.9 and c["grid"] == "3x3" and c["logy"] is True
+
+
 def test_logy_and_xaxis_toggle(logdir):
     a = _app(logdir)
     a._handle_view_key("l")

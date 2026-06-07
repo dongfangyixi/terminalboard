@@ -9,13 +9,42 @@ from . import __version__
 
 
 def _parse_grid(value: str):
+    if isinstance(value, (tuple, list)):
+        return tuple(value)
     try:
-        r, c = value.lower().split("x")
+        r, c = str(value).lower().split("x")
         return int(r), int(c)
     except Exception:
         raise argparse.ArgumentTypeError(
             f"--grid expects RxC (e.g. 2x3), got {value!r}"
         )
+
+
+def load_config() -> dict:
+    """Read defaults from $TERMINALBOARD_CONFIG or ~/.config/terminalboard.toml.
+
+    A ``[terminalboard]`` table (or top-level keys) with any of: smooth, grid,
+    interval, tags, experiments, xaxis, logy, tb. Needs Python 3.11+ (tomllib) or
+    the ``tomli`` package; otherwise it's silently skipped. CLI flags override it.
+    """
+    import os
+    path = os.environ.get("TERMINALBOARD_CONFIG") or os.path.expanduser(
+        "~/.config/terminalboard.toml")
+    if not os.path.isfile(path):
+        return {}
+    try:
+        try:
+            import tomllib as toml
+        except ModuleNotFoundError:
+            import tomli as toml          # type: ignore
+    except ModuleNotFoundError:
+        return {}
+    try:
+        with open(path, "rb") as f:
+            data = toml.load(f)
+    except Exception:
+        return {}
+    return data.get("terminalboard", data)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -59,7 +88,23 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    cfg = load_config()
+    # Apply config-file values as argparse defaults (explicit CLI flags override).
+    cfg_defaults = {}
+    for key, dest, conv in [
+        ("smooth", "smooth", float), ("interval", "interval", float),
+        ("tags", "tags", str), ("experiments", "experiments", str),
+        ("grid", "grid", _parse_grid), ("tb", "tb", bool),
+    ]:
+        if key in cfg:
+            try:
+                cfg_defaults[dest] = conv(cfg[key])
+            except Exception:
+                pass
+    if cfg_defaults:
+        parser.set_defaults(**cfg_defaults)
+    args = parser.parse_args(argv)
     logdir = args.logdir_opt or args.logdir
     if not logdir:
         print("terminalboard: a logdir is required "
@@ -94,6 +139,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         reader, renderer,
         tag_filter=args.tags, run_filter=args.experiments, smooth=args.smooth,
         rows=rows, cols=cols, interval=args.interval,
+        xaxis=str(cfg.get("xaxis", "step")), logy=bool(cfg.get("logy", False)),
     )
     try:
         app.run(once=args.once)

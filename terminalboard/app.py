@@ -112,6 +112,8 @@ class App:
         cols: int = 3,
         rows: int = 2,
         interval: float = 2.0,
+        xaxis: str = "step",
+        logy: bool = False,
     ):
         self.reader = reader
         self.renderer = renderer
@@ -133,9 +135,10 @@ class App:
         self._detail_run = 0   # which experiment is shown in detail (text/heatmap)
         self._scroll = 0       # scroll offset in a text detail view
         self._cursor = 0       # x-cursor index in a scalar detail view
-        self.xaxis = "step"    # scalar x-axis: 'step' or 'time' (relative wall)
-        self.logy = False      # log-scale y for scalar panels
+        self.xaxis = xaxis if xaxis in ("step", "time") else "step"
+        self.logy = bool(logy)  # log-scale y for scalar panels
         self._textdiff = False  # text detail: show only keys that differ across runs
+        self._status = ""       # transient status line (e.g. after CSV export)
         # Start at the ladder rung closest to the requested grid's panel count.
         target = max(1, rows) * max(1, cols)
         self._zoom = min(
@@ -208,7 +211,7 @@ class App:
         return (
             "\033[2m[arrows]focus [Enter]inspect [n/p]page [f/t]ilter "
             f"[z/Z]zoom({per_page}) [o]rder [+/-/0]smooth [x]axis [l]og "
-            "[H]elp [q/Esc]uit\033[0m"
+            "[w]csv [H]elp [q/Esc]uit\033[0m"
         )
 
     def _prompt_footer(self, label: str, text: str, pos: int, kind: str,
@@ -306,7 +309,8 @@ class App:
         cols, rows = shutil.get_terminal_size((100, 30))
         all_tags, page_tags, page, n_pages, focus_cell = self._layout()
         header = self._header(all_tags, page, n_pages)
-        footer = self._prompt_footer(*prompt) if prompt else self._footer()
+        footer = (self._prompt_footer(*prompt) if prompt
+                  else self._with_status(self._footer()))
         # Reserve the header + footer rows; the body must fit the rest so the
         # whole frame is never taller than the terminal (overflow scrolls and
         # would misalign the in-place repaint, leaving stale curves behind).
@@ -325,6 +329,43 @@ class App:
         # so width takes care of itself).
         lines = frame.split("\n")
         return "\n".join(lines[:rows])
+
+    def _with_status(self, footer: str) -> str:
+        if self._status:
+            return footer + f"   \033[1;32m{self._status}\033[0m"
+        return footer
+
+    def _current_tag(self) -> Optional[str]:
+        if self._detail is not None:
+            return self._detail
+        tags = self._matching_tags()
+        return tags[self._focus] if tags and self._focus < len(tags) else None
+
+    def _export_csv(self) -> str:
+        """Write the focused/detail scalar tag to a CSV in the cwd."""
+        import csv
+        import os
+        tag = self._current_tag()
+        if not tag:
+            return "nothing to export"
+        runs = self._visible_runs()
+        names = [n for n in sorted(runs)
+                 if tag in runs[n].series and runs[n].series[tag].kind == "scalar"]
+        if not names:
+            return f"'{tag}' is not a scalar — CSV skipped"
+        lut = {n: dict(zip(runs[n].series[tag].steps, runs[n].series[tag].values))
+               for n in names}
+        steps = sorted({s for n in names for s in lut[n]})
+        path = os.path.abspath(tag.strip("/").replace("/", "_") + ".csv")
+        try:
+            with open(path, "w", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(["step"] + names)
+                for s in steps:
+                    w.writerow([s] + [lut[n].get(s, "") for n in names])
+        except OSError as e:
+            return f"export failed: {e}"
+        return f"✓ wrote {os.path.basename(path)} ({len(steps)} rows)"
 
     # -- detail (drill-down) view -------------------------------------------
 
@@ -369,7 +410,7 @@ class App:
             )
             switch = "←/→ switch exp · " if len(names) > 1 else ""
             footer = f"\033[2m{switch}Esc back\033[0m"
-        return self._crop(f"{header}\n{body}\n{footer}", rows)
+        return self._crop(f"{header}\n{body}\n{self._with_status(footer)}", rows)
 
     # -- scalar detail with a TensorBoard-style x-cursor + readout -----------
 
@@ -452,8 +493,9 @@ class App:
         axes = f"x={self.xaxis} y={'log' if self.logy else 'lin'}"
         header = (f"\033[1m{tag}\033[0m  cursor @ step {cstep}  "
                   f"({self._cursor + 1}/{len(track)})  exps={len(names)}  {axes}")
-        footer = ("\033[2m←/→ cursor · Shift+←/→ fast · Home/End · "
-                  "+/- smooth · x axis · l log · Esc back\033[0m")
+        footer = self._with_status(
+            "\033[2m←/→ cursor · Shift+←/→ fast · Home/End · "
+            "+/- smooth · x axis · l log · w csv · Esc back\033[0m")
         return self._crop("\n".join([header, plot] + readout + [footer]), rows)
 
     def _scroll_view(self, lines, w, h):
@@ -533,8 +575,8 @@ class App:
                 total += len(s)
                 if s.steps:
                     last_step = max(last_step, s.steps[-1])
-        return (total, last_step, self._focus, self._detail_run,
-                self._scroll, self._cursor, self._textdiff) + self._view_sig()
+        return (total, last_step, self._focus, self._detail_run, self._scroll,
+                self._cursor, self._textdiff, self._status) + self._view_sig()
 
     def render_once(self) -> None:
         self.reader.poll()
@@ -705,10 +747,14 @@ class App:
 
     def _handle_grid_key(self, screen, keys, tok: str) -> bool:
         """Handle a key in the grid (overview). Return True to quit."""
+        if tok != "w":
+            self._status = ""
         per_page = max(1, self.rows * self.cols)
         n = len(self._matching_tags())
         last = max(0, n - 1)
-        if tok in ("f", "t"):
+        if tok == "w":
+            self._status = self._export_csv()
+        elif tok in ("f", "t"):
             self._edit_filter(screen, keys, "tags" if tok == "t" else "runs")
         elif tok in ("H", "?"):
             self._show_help(screen, keys)
@@ -767,9 +813,14 @@ class App:
         (press Esc again there to quit). 'q' does nothing here."""
         if tok in ("\x03", "\x04"):                     # Ctrl-C / Ctrl-D
             return "quit"
+        if tok != "w":
+            self._status = ""
         if tok in ("ESC", "\r", "\n"):                  # back to grid
             self._detail = None
             self._scroll = 0
+            return None
+        if tok == "w":
+            self._status = self._export_csv()
             return None
         names = self._detail_runs()
         if not names:
@@ -839,6 +890,7 @@ class App:
             "    n / space / j   next page         p / k        previous page",
             "    z / Z           zoom out / in     o            cycle curve order (z)",
             "    x               x-axis step/time  l            toggle log-y",
+            "    w               export focused scalar to CSV",
             "    r               refresh now       q / Esc      quit",
             "",
             "  \033[1mDetail view\033[0m (after Enter)",

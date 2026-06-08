@@ -79,15 +79,22 @@ def title_tag(tag: str, maxlen: int) -> str:
 
 
 def wrap_title(tag: str, w: int, max_lines: int):
-    """Wrap a tag across up to ``max_lines`` lines of width ``w`` (char-wise).
+    """Wrap a tag across up to ``max_lines`` lines of width ``w`` (char-wise),
+    **balancing** the line lengths so every line is roughly equal — that way each
+    line, once centered, shows margins on both sides instead of the first line
+    filling the whole width.
 
-    If it still doesn't fit, the last line keeps the tail (leaf) with a leading
-    ellipsis so the most specific part stays visible."""
+    If it doesn't fit in ``max_lines`` lines of width ``w``, the last line keeps
+    the tail (leaf) with a leading ellipsis so the most specific part stays
+    visible."""
     w = max(1, w)
-    chunks = [tag[i:i + w] for i in range(0, len(tag), w)] or [""]
-    if len(chunks) <= max_lines:
-        return chunks
-    head = chunks[:max_lines - 1]
+    need = max(1, -(-len(tag) // w))          # min lines to fit at width w
+    if need <= max_lines:
+        lines = need
+        size = -(-len(tag) // lines)          # even chunk size = ceil(len/lines)
+        return [tag[i:i + size] for i in range(0, len(tag), size)] or [""]
+    # Too long even for max_lines: fill the first lines, keep the leaf on the last.
+    head = [tag[i:i + w] for i in range(0, (max_lines - 1) * w, w)]
     rest = tag[(max_lines - 1) * w:]
     last = rest if len(rest) <= w else "…" + rest[-(w - 1):]
     return head + [last]

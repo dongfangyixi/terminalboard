@@ -12,6 +12,14 @@
 - Bundled **demo generator** (`examples/gen_demo_logs.py`) and a **GIF recording
   script** (`scripts/record_demo.sh`); `uvx`/`pipx run` note in the README.
 
+### Changed
+- **Legend** now shows **full experiment names**, wrapping over multiple lines
+  instead of truncating with `…` — so names are readable when filtering.
+- **Panel titles** show the **full tag path**, wrapping over up to 3 lines (with
+  a uniform, row-aligned height across the page); when still too long the last
+  line keeps the leaf via leading ellipsis. Scalar titles are drawn by us, so a
+  wide title is never dropped by plotext.
+
 ## 0.2.1
 
 ### Fixed / changed

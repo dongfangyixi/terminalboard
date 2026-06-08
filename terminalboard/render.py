@@ -107,12 +107,14 @@ def title_lines_needed(tag: str, w: int) -> int:
 
 
 def _title_block(tag: str, w: int, rows: int):
-    """Bold title lines, wrapped to a margin-narrowed width but padded to the full
-    panel width (exactly ``rows`` lines; empty list when rows<=0)."""
+    """Bold title lines, wrapped to a margin-narrowed width and **centered** within
+    the full panel width (exactly ``rows`` lines; empty list when rows<=0)."""
     if rows <= 0:
         return []
-    out = [_fit("\033[1m" + c + "\033[0m", w)
-           for c in wrap_title(tag, _title_w(w), rows)]
+    out = []
+    for c in wrap_title(tag, _title_w(w), rows):
+        pad = max(0, (w - len(c)) // 2)          # equal-ish margins on both sides
+        out.append(_fit(" " * pad + "\033[1m" + c + "\033[0m", w))
     while len(out) < rows:
         out.append(" " * w)
     return out[:rows]

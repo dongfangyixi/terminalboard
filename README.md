@@ -192,10 +192,12 @@ only if a currently-visible experiment has it.
 ### Multiple experiments
 
 When a logdir holds several runs, their curves are **overlaid in each panel**,
-each experiment in its own color, with a legend above the grid. Colors are
-**stable** — an experiment keeps its color no matter which others you filter in
-or out — so you can always tell which curve is which. Use `f` (or
-`--experiments`) to focus on a subset.
+each experiment in its own color, with a legend above the grid showing the
+**full run names** (wrapping over multiple lines if needed — never truncated, so
+you can read the exact names when filtering). Colors are **stable** — an
+experiment keeps its color no matter which others you filter in or out. Use `f`
+(or `--experiments`) to focus on a subset. Panel titles show the **full tag
+path** (leading-ellipsis only when the panel is too narrow).
 
 In the filter prompt: **←/→** move the cursor, **↑/↓** recall previous patterns,
 **Home/End** (or `^A`/`^E`) jump, `^U` clears. If a pattern matches nothing the

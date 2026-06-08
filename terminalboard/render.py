@@ -68,6 +68,16 @@ def shorten_tag(tag: str, maxlen: int) -> str:
     return "…" + leaf[-(maxlen - 1):]
 
 
+def title_tag(tag: str, maxlen: int) -> str:
+    """Show the FULL tag path; if too wide, keep the tail (leaf + as much of the
+    namespace as fits) with a leading ellipsis — never just the leaf."""
+    if maxlen <= 0 or len(tag) <= maxlen:
+        return tag
+    if maxlen <= 1:
+        return tag[-maxlen:]
+    return "…" + tag[-(maxlen - 1):]
+
+
 def grid_dims(n: int, max_cols: int = 3):
     """Choose (rows, cols) for ``n`` panels."""
     if n <= 0:
@@ -87,15 +97,25 @@ def _reset_plotext(plt) -> None:
         plt.clear_figure()
 
 
-def run_legend(run_order, run_colors, width: int) -> str:
-    """A single colored line mapping each run to its (stable) color."""
-    parts = []
-    budget = max(10, width // max(1, len(run_order)) - 4)
+def run_legend_lines(run_order, run_colors, width: int) -> List[str]:
+    """Map each run to its (stable) color, with **full names** — flowing onto as
+    many lines as needed (no truncation)."""
+    lines: List[str] = []
+    cur, cur_w = "", 0
     for name in run_order:
         code = _RUN_STYLES[run_colors.get(name, 0) % len(_RUN_STYLES)][1]
-        label = name if len(name) <= budget else "…" + name[-(budget - 1):]
-        parts.append(f"\033[{code}m──\033[0m {label}")
-    return "  " + "   ".join(parts)
+        seg = f"\033[{code}m──\033[0m {name}"
+        seg_w = 3 + len(name)          # "── " + name
+        sep_w = 3 if cur else 2        # gap between entries / left margin
+        if cur and cur_w + sep_w + seg_w > width:
+            lines.append(("  " + cur))
+            cur, cur_w = seg, seg_w
+        else:
+            cur = (cur + "   " + seg) if cur else seg
+            cur_w += sep_w + seg_w
+    if cur:
+        lines.append("  " + cur)
+    return lines or [""]
 
 
 # --- block / tiling helpers (ANSI-aware) ------------------------------------
@@ -179,8 +199,10 @@ def _scalar_block(tag, pairs, run_color, w, h, smooth, marker, theme,
                   max_points, cursor=None, xaxis="step", logy=False) -> List[str]:
     import plotext as plt
 
+    h = max(2, h)
+    plot_h = max(1, h - 1)            # reserve row 0 for our own full-path title
     _reset_plotext(plt)
-    plt.plotsize(w, h)
+    plt.plotsize(w, plot_h)
     plt.theme(theme)
     vmin = vmax = None
     for run_name, s in pairs:
@@ -208,12 +230,13 @@ def _scalar_block(tag, pairs, run_color, w, h, smooth, marker, theme,
             plt.vertical_line(cursor, color="white")
         except Exception:
             pass
-    plt.title(shorten_tag(tag, max(6, w - 9)))
-    return _to_block(plt.build(), w, h)
+    # Title rendered by us (not plotext) so the full path is never dropped.
+    title = _fit("\033[1m" + title_tag(tag, w) + "\033[0m", w)
+    return [title] + _to_block(plt.build(), w, plot_h)
 
 
 def _text_block(tag, pairs, run_color, w, h, multi_run) -> List[str]:
-    lines = [_fit("\033[1m" + shorten_tag(tag, w) + "\033[0m", w)]
+    lines = [_fit("\033[1m" + title_tag(tag, w) + "\033[0m", w)]
     body: List[str] = []
     for run_name, s in pairs:
         if not len(s):
@@ -268,9 +291,9 @@ def _histogram_block(tag, pairs, run_color, w, h, multi_run) -> List[str]:
     if chosen is None:
         return _empty_block(w, h)
     run_name, s = chosen
-    title_txt = shorten_tag(tag, w)
+    title_txt = title_tag(tag, w)
     if multi_run:
-        title_txt = f"{shorten_tag(tag, max(6, w - 14))} [{shorten_tag(run_name, 10)}]"
+        title_txt = f"{title_tag(tag, max(6, w - 14))} [{shorten_tag(run_name, 10)}]"
     lines = [_fit("\033[1m" + title_txt + "\033[0m", w)]
 
     all_edges = [e for (edges, _c) in s.buckets for e in edges]
@@ -357,7 +380,12 @@ class TextRenderer(Renderer):
         run_color = run_colors or {n: i for i, n in enumerate(sorted(runs))}
         order = [n for n in (run_order or sorted(runs)) if n in runs]
         multi_run = len(runs) > 1
-        legend_rows = 1 if multi_run else 0
+        # Full run names, wrapped over as many lines as needed (capped so the
+        # legend can't swallow the whole screen).
+        legend_lines = (run_legend_lines(sorted(runs), run_color, width)
+                        if multi_run else [])
+        legend_lines = legend_lines[:max(1, height // 3)] if legend_lines else []
+        legend_rows = len(legend_lines)
 
         rows, cols = grid_dims(len(tags), max_cols)
         gutter = 1
@@ -387,8 +415,8 @@ class TextRenderer(Renderer):
                 block = _highlight_block(block)
             blocks.append(block)
         body = _tile(blocks, rows, cols, panel_h, gutter)
-        if multi_run:
-            return run_legend(sorted(runs), run_color, width) + "\n" + body
+        if legend_lines:
+            return "\n".join(legend_lines) + "\n" + body
         return body
 
     def detail_scalar(self, runs, tag, *, order, run_color, w, h, smooth,

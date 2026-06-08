@@ -546,9 +546,11 @@ class App:
         self._cursor = max(0, min(self._cursor, len(track) - 1))
         cstep = track[self._cursor]
 
-        # Per-run readout at the cursor step.
+        # Per-run readout at the cursor step (full run names, aligned).
         readout: List[str] = []
-        for n in names[:8]:
+        shown = names[:8]
+        namew = max((len(n) for n in shown), default=4)
+        for n in shown:
             s = runs[n].series[tag]
             if not s.steps:
                 continue
@@ -560,7 +562,7 @@ class App:
                 rt = "  t " + self._fmt_reltime(s.wall_times[i] - s.wall_times[0])
             code = _RUN_STYLES[rc.get(n, 0) % len(_RUN_STYLES)][1]
             readout.append(
-                f"\033[{code}m●\033[0m {n[:20]:<20} step {s.steps[i]:>8}  "
+                f"\033[{code}m●\033[0m {n:<{namew}}  step {s.steps[i]:>8}  "
                 f"value {val:< 12.5g} smoothed {sm:< 12.5g}{rt}"
             )
 

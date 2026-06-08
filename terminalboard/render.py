@@ -93,15 +93,26 @@ def wrap_title(tag: str, w: int, max_lines: int):
     return head + [last]
 
 
+_TITLE_MARGIN = 3      # keep the title this many cols short of the panel edge so
+                       # adjacent titles have a clear gap (the plot below fills w)
+
+
+def _title_w(w: int) -> int:
+    return max(4, w - _TITLE_MARGIN)
+
+
 def title_lines_needed(tag: str, w: int) -> int:
-    return max(1, -(-len(tag) // max(1, w)))    # ceil(len/w)
+    iw = _title_w(w)
+    return max(1, -(-len(tag) // max(1, iw)))    # ceil(len/inner_width)
 
 
 def _title_block(tag: str, w: int, rows: int):
-    """Bold, padded title lines (exactly ``rows``; empty list when rows<=0)."""
+    """Bold title lines, wrapped to a margin-narrowed width but padded to the full
+    panel width (exactly ``rows`` lines; empty list when rows<=0)."""
     if rows <= 0:
         return []
-    out = [_fit("\033[1m" + c + "\033[0m", w) for c in wrap_title(tag, w, rows)]
+    out = [_fit("\033[1m" + c + "\033[0m", w)
+           for c in wrap_title(tag, _title_w(w), rows)]
     while len(out) < rows:
         out.append(" " * w)
     return out[:rows]

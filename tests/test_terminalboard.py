@@ -194,6 +194,25 @@ def test_scalar_detail_cursor(logdir):
     assert "cursor @ step" in frame and "value" in frame and "smoothed" in frame
 
 
+def test_scalar_cursor_track_is_union_of_runs(tmp_path):
+    # two runs of different length: cursor must reach the longer run's last step
+    import conftest as C
+    for name, n in [("short", 5), ("long", 12)]:
+        d = tmp_path / name
+        d.mkdir()
+        C.write_events(d / "events.out.tfevents.1.h.1.0",
+                       [(i, [C.scalar_value("m", float(i))]) for i in range(n)])
+    a = App(make_reader(str(tmp_path)), TextRenderer())
+    a.reader.poll()
+    a.tag_filter = "m"
+    a._handle_grid_key(_FakeScreen(), None, "\r")
+    track = a._scalar_track("m", a._detail_runs())
+    assert track[-1] == 11                       # union reaches the long run
+    assert a._cursor == len(track) - 1           # starts at the global last point
+    a._handle_detail_key(_FakeScreen(), None, "END")
+    assert track[a._cursor] == 11                # END lands on the furthest point
+
+
 def test_config_diff(tmp_path):
     # two runs whose config differs in one key
     import conftest as C

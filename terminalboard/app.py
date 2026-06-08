@@ -513,19 +513,31 @@ class App:
         h, m = divmod(m, 60)
         return f"+{h}h{m:02d}m"
 
-    def _primary_run(self, tag, names):
-        """The on-top run (last in draw order) that has data for ``tag``."""
-        runs = self._visible_runs()
-        order = [n for n in self._run_order() if n in names]
-        for n in reversed(order):
-            if runs[n].series[tag].steps:
-                return n
-        return names[0] if names else None
-
     def _scalar_track(self, tag, names) -> List[int]:
-        """Cursor stops = the primary run's real steps (←/→ moves one point)."""
-        n = self._primary_run(tag, names)
-        return list(self._visible_runs()[n].series[tag].steps) if n else []
+        """Cursor stops = the UNION of every visible run's steps, so ←/→ can reach
+        the last point among all experiments (not just one run's last step)."""
+        runs = self._visible_runs()
+        steps = set()
+        for n in names:
+            steps.update(runs[n].series[tag].steps)
+        return sorted(steps)
+
+    def _cursor_time(self, tag, names, cstep) -> float:
+        """Relative wall-time for the cursor on the time axis: take the
+        furthest-reaching run's time at the step nearest ``cstep``."""
+        runs = self._visible_runs()
+        best = None                      # (reach, reltime)
+        for n in names:
+            s = runs[n].series[tag]
+            if not s.steps or not s.wall_times:
+                continue
+            i = self._nearest_index(s.steps, cstep)
+            if i >= len(s.wall_times):
+                continue
+            reach, reltime = s.steps[-1], s.wall_times[i] - s.wall_times[0]
+            if best is None or reach > best[0]:
+                best = (reach, reltime)
+        return best[1] if best else cstep
 
     def _nearest_index(self, steps, target) -> int:
         i = bisect.bisect_left(steps, target)
@@ -567,12 +579,7 @@ class App:
             )
 
         # Cursor x in the active axis domain (so the vertical line lands right).
-        if self.xaxis == "time":
-            ps = runs[self._primary_run(tag, names)].series[tag]
-            cx = (ps.wall_times[self._cursor] - ps.wall_times[0]
-                  if ps.wall_times and self._cursor < len(ps.wall_times) else cstep)
-        else:
-            cx = cstep
+        cx = self._cursor_time(tag, names, cstep) if self.xaxis == "time" else cstep
 
         plot_h = max(2, body_h - len(readout))
         plot = self.renderer.detail_scalar(

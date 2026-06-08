@@ -12,6 +12,12 @@
 - Bundled **demo generator** (`examples/gen_demo_logs.py`) and a **GIF recording
   script** (`scripts/record_demo.sh`); `uvx`/`pipx run` note in the README.
 
+### Fixed
+- **Scalar detail cursor** now ranges over the **union of all visible runs'
+  steps**, so `←/→`/`End` can reach the last point among *all* experiments —
+  previously it stopped at one run's final step even when others had data
+  further right.
+
 ### Changed
 - **Legend** now shows **full experiment names**, wrapping over multiple lines
   instead of truncating with `…` — so names are readable when filtering.

@@ -1053,54 +1053,134 @@ class App:
 
     # -- help overlay --------------------------------------------------------
 
-    def _help_text(self) -> str:
-        return "\n".join([
-            "  \033[1mterminalboard\033[0m — help",
-            "",
-            "  \033[1mNavigation\033[0m",
-            "    ←/↑/↓/→         move focus        Enter        inspect (full screen)",
-            "    n / space / j   next page         p / k        previous page",
-            "    z / Z           zoom out / in     o            cycle curve order (z)",
-            "    x               x-axis step/time  l            toggle log-y",
-            "    w               export focused scalar to CSV",
-            "    r               refresh now       q / Esc      quit",
-            "",
-            "  \033[1mDetail view\033[0m (after Enter)",
-            "    curve:  ←/→ move cursor (value/step/time readout) · Shift+←/→ fast",
-            "    text:   ↑/↓ · PgUp/PgDn scroll · ←/→ switch experiment · d diff",
-            "    histogram:  ←/→ switch experiment",
-            "    Esc     back to grid (Esc again to quit)",
-            "",
-            "  \033[1mSmoothing\033[0m",
-            "    + / =  more      -  less      0  off",
-            "",
-            "  \033[1mFiltering\033[0m",
-            "    t  edit tag filter        f  edit experiment filter",
-            "    In the prompt:  ←/→ move   ↑/↓ history   Home/End or ^A/^E",
-            "                    ^W del word   ^K kill-to-end   ^U clear",
-            "                    Alt/Ctrl+←/→ word move   Enter apply   Esc cancel",
-            "",
-            "  \033[1mFilter syntax\033[0m (tags and experiments)",
-            "    word         case-insensitive substring   (loss → train/loss)",
-            "    a b          AND  (both must match)",
-            "    a | b , c    OR   (| or , separate alternatives)",
-            "    * ? [ ]      glob wildcards                (train/*loss*)",
-            "    !word        NOT  (exclude)",
-            "    /regex/      regex (case-insensitive); wrap the WHOLE filter "
-            "for | or spaces",
-            "",
-            "  \033[1mPlot types\033[0m  scalars (curves) · text summaries · "
-            "histograms (heatmap)",
-            "",
-            "  \033[1mView state\033[0m  filters, zoom, smoothing, axis and focus are",
-            "    saved per-logdir and restored next time (start fresh: --reset-view)",
-            "",
-            "  \033[2mPress any key to return…\033[0m",
-        ])
+    def _help_lines(self) -> List[str]:
+        """Single-column help: one binding per line, key → action, with color."""
+        BOLD, DIM, RST = "\033[1m", "\033[2m", "\033[0m"
+        HDR = "\033[1;33m"          # bold yellow section header
+        KEY = "\033[1;36m"          # bold cyan key
+        KW = 15                     # key column width
+
+        def hdr(t):
+            return f"{HDR}{t}{RST}"
+
+        def row(k, d):
+            return f"  {KEY}{k:<{KW}}{RST} {d}"
+
+        def note(t):
+            return f"  {DIM}{t}{RST}"
+
+        L: List[str] = []
+        L.append(f"{BOLD}terminalboard{RST} {DIM}— keyboard help{RST}")
+        L.append("")
+        L.append(hdr("Navigation"))
+        L += [
+            row("←/↑/↓/→", "move focus between panels"),
+            row("Enter", "inspect focused panel (full screen)"),
+            row("n / Space / j", "next page"),
+            row("p / k", "previous page"),
+            row("z / Z", "zoom out / in (panels per page)"),
+            row("o", "cycle curve order (which run is on top)"),
+            row("x", "x-axis: step ↔ time"),
+            row("l", "toggle log-scale Y"),
+            row("w", "export focused scalar to CSV"),
+            row("r", "refresh now"),
+            row("q / Esc", "quit"),
+        ]
+        L.append("")
+        L.append(hdr("Detail view — curve") + DIM + "  (after Enter)" + RST)
+        L += [
+            row("←/→", "move cursor (readout: value / step / time)"),
+            row("Shift+←/→", "move cursor faster"),
+            row("Home / End", "jump to first / last point"),
+        ]
+        L.append(hdr("Detail view — text"))
+        L += [
+            row("↑/↓  PgUp/PgDn", "scroll"),
+            row("←/→", "switch experiment"),
+            row("d", "config diff (only the keys that differ)"),
+        ]
+        L.append(hdr("Detail view — histogram"))
+        L += [row("←/→", "switch experiment")]
+        L.append(row("Esc", "back to grid (Esc again to quit)"))
+        L.append("")
+        L.append(hdr("Smoothing"))
+        L += [
+            row("+ / =", "more"),
+            row("-", "less"),
+            row("0", "off"),
+        ]
+        L.append("")
+        L.append(hdr("Filtering"))
+        L += [
+            row("t", "edit tag filter"),
+            row("f", "edit experiment filter"),
+        ]
+        L.append(note("in the filter prompt:"))
+        L += [
+            row("←/→", "move cursor"),
+            row("↑/↓", "recall previous patterns"),
+            row("Home/End", "line start / end  (also ^A / ^E)"),
+            row("^W / ^K / ^U", "delete word / kill-to-end / clear"),
+            row("Alt/Ctrl+←/→", "move by word"),
+            row("Enter / Esc", "apply / cancel"),
+        ]
+        L.append("")
+        L.append(hdr("Filter syntax") + DIM + "  (tags and experiments)" + RST)
+        L += [
+            row("word", "case-insensitive substring  (loss → train/loss)"),
+            row("a b", "AND  (both must match)"),
+            row("a | b , c", "OR  (| or , separate alternatives)"),
+            row("* ? [ ]", "glob wildcards  (train/*loss*)"),
+            row("!word", "NOT  (exclude)"),
+            row("/regex/", "regex; wrap the WHOLE filter for | or spaces"),
+        ]
+        L.append("")
+        L.append(hdr("Plot types"))
+        L.append(note("scalars (curves) · text summaries · histograms (heatmap)"))
+        L.append("")
+        L.append(hdr("View state"))
+        L.append(note("filters, zoom, smoothing, axis, order and focus are saved"))
+        L.append(note("per-logdir and restored next time  (start fresh: --reset-view)"))
+        return L
 
     def _show_help(self, screen, keys) -> None:
         cols, rows = shutil.get_terminal_size((100, 30))
-        lines = self._help_text().split("\n")[:rows]
-        screen.draw("\n".join(lines), hard=True)
-        while keys.get(30) is None:        # wait for any key
-            pass
+        lines = self._help_lines()
+        body_h = max(1, rows - 1)              # reserve a row for the footer
+        maxscroll = max(0, len(lines) - body_h)
+        scroll = 0
+        while True:
+            view = lines[scroll:scroll + body_h]
+            view += [""] * (body_h - len(view))
+            if maxscroll:
+                pos = f"{scroll + 1}-{min(len(lines), scroll + body_h)}/{len(lines)}"
+                foot = (f"\033[2m  ↑/↓ PgUp/PgDn scroll · "
+                        f"any other key to return   ({pos})\033[0m")
+            else:
+                foot = "\033[2m  press any key to return…\033[0m"
+            screen.draw("\n".join(view + [foot]), hard=True)
+            chunk = keys.get(30)
+            if chunk is None:
+                continue
+            if not maxscroll:                  # everything fits → any key returns
+                return
+            done = False
+            for tok in self._parse_chunk(chunk):
+                if tok == "UP":
+                    scroll -= 1
+                elif tok == "DOWN":
+                    scroll += 1
+                elif tok == "PGUP":
+                    scroll -= body_h
+                elif tok == "PGDN":
+                    scroll += body_h
+                elif tok == "HOME":
+                    scroll = 0
+                elif tok == "END":
+                    scroll = maxscroll
+                else:                          # any non-scroll key returns
+                    done = True
+                    break
+                scroll = max(0, min(scroll, maxscroll))
+            if done:
+                return

@@ -183,9 +183,10 @@ def test_scalar_detail_cursor(logdir):
     a.tag_filter = "train/loss"
     a._handle_grid_key(_FakeScreen(), None, "\r")
     track = a._scalar_track("train/loss", a._detail_runs())
-    assert a._cursor == len(track) - 1           # starts at the latest point
+    mid = (len(track) - 1) // 2
+    assert a._cursor == mid                       # starts in the middle
     a._handle_detail_key(_FakeScreen(), None, "LEFT")
-    assert a._cursor == len(track) - 2
+    assert a._cursor == mid - 1
     a._handle_detail_key(_FakeScreen(), None, "HOME")
     assert a._cursor == 0
     a._handle_detail_key(_FakeScreen(), None, "END")
@@ -208,7 +209,7 @@ def test_scalar_cursor_track_is_union_of_runs(tmp_path):
     a._handle_grid_key(_FakeScreen(), None, "\r")
     track = a._scalar_track("m", a._detail_runs())
     assert track[-1] == 11                       # union reaches the long run
-    assert a._cursor == len(track) - 1           # starts at the global last point
+    assert a._cursor == (len(track) - 1) // 2    # starts in the middle
     a._handle_detail_key(_FakeScreen(), None, "END")
     assert track[a._cursor] == 11                # END lands on the furthest point
 
@@ -270,6 +271,33 @@ def test_csv_prompt_uses_csv_dir(logdir, tmp_path):
     assert (out / "train_loss.csv").exists()
     a._do_csv(_FakeScreen(), _Keys(["\x1b"]))          # Esc cancels
     assert a._status == ""
+
+
+def test_view_state_persists(logdir, tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    a = App(make_reader(str(logdir)), TextRenderer(), restore=True)
+    a.reader.poll()
+    a.tag_filter = "train/loss"
+    a.run_filter = "run_a"
+    a.smooth = 0.85
+    a.xaxis = "time"
+    a.logy = True
+    a._zoom = 1
+    a._focus = 0
+    a._save_view()
+    # a fresh app on the same logdir restores it
+    b = App(make_reader(str(logdir)), TextRenderer(), restore=True)
+    assert b.tag_filter == "train/loss"
+    assert b.run_filter == "run_a"
+    assert b.smooth == 0.85
+    assert b.xaxis == "time"
+    assert b.logy is True
+    assert b._zoom == 1
+    # restore_exclude lets an explicit CLI value win (not overwritten by saved)
+    c = App(make_reader(str(logdir)), TextRenderer(), restore=True,
+            tag_filter="other", restore_exclude={"tag_filter"})
+    assert c.tag_filter == "other"
+    assert c.smooth == 0.85                       # still restored
 
 
 def test_config_load(tmp_path, monkeypatch):

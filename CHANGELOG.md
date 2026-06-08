@@ -12,11 +12,19 @@
 - Bundled **demo generator** (`examples/gen_demo_logs.py`) and a **GIF recording
   script** (`scripts/record_demo.sh`); `uvx`/`pipx run` note in the README.
 
+### Added
+- **Per-logdir view persistence**: filters, zoom, smoothing, x-axis, log-Y,
+  curve order and focus are saved on exit (under `$XDG_STATE_HOME` /
+  `~/.local/state/terminalboard/`) and restored when you reopen the same logdir.
+  Explicit CLI flags still win; `--reset-view` ignores the saved state (and
+  `restore = false` in the config disables persistence).
+
 ### Fixed
 - **Scalar detail cursor** now ranges over the **union of all visible runs'
   steps**, so `←/→`/`End` can reach the last point among *all* experiments —
   previously it stopped at one run's final step even when others had data
-  further right.
+  further right. It also **starts in the middle** of the range (so it's clear it
+  can move both ways) instead of parked at the far right.
 
 ### Changed
 - **Legend** now shows **full experiment names**, wrapping over multiple lines

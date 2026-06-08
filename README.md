@@ -238,10 +238,20 @@ tags = "train/*"
 # experiments = "baseline | scaling"
 # tb = true
 # csv_dir = "~/tb-exports"   # pre-filled folder in the CSV save (w) prompt
+# restore = true             # save/restore per-logdir view state (default: on)
 ```
 
 `w` opens a path prompt pre-filled with `<csv_dir>/<tag>.csv` (editable; Enter
 saves, Esc cancels).
+
+### Saved view state
+
+Your filters, zoom level, smoothing, x-axis, log-Y, curve order and focus are
+saved **per logdir** when you quit, and restored the next time you open the same
+logdir — so you pick up where you left off. State lives under
+`$XDG_STATE_HOME/terminalboard/views/` (default `~/.local/state/...`). Explicit
+CLI flags (e.g. `--tags`, `--smooth`) override the saved values; `--reset-view`
+starts fresh, and `restore = false` in the config turns persistence off.
 
 ## Roadmap
 

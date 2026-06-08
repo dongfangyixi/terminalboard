@@ -78,6 +78,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="panel grid per page (default: 2x3)")
     p.add_argument("--interval", type=float, default=2.0, metavar="SECONDS",
                    help="live refresh interval (default: 2.0)")
+    p.add_argument("--reset-view", action="store_true", dest="reset_view",
+                   help="ignore the saved per-logdir view state and start fresh "
+                        "(the new state is still saved on exit)")
     p.add_argument("--once", action="store_true",
                    help="render a single frame and exit (no live loop)")
     p.add_argument("--list", action="store_true", dest="list_tags",
@@ -85,6 +88,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="version",
                    version=f"terminalboard {__version__}")
     return p
+
+
+def _explicit_dests(argv) -> set:
+    """Which option dests the user actually passed on the command line (so saved
+    view state can defer to explicit flags but override config/defaults)."""
+    probe = build_parser()
+    for action in probe._actions:
+        action.default = argparse.SUPPRESS
+    try:
+        ns = probe.parse_args(argv)
+    except SystemExit:
+        return set()
+    return set(vars(ns).keys())
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -135,12 +151,28 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     renderer = TextRenderer()
     rows, cols = args.grid
+
+    # Per-logdir view persistence. Explicit CLI flags win over saved state; with
+    # --reset-view nothing is loaded (but the fresh state is still saved on exit).
+    persist = bool(cfg.get("restore", True))
+    exclude: set = set()
+    if persist and args.reset_view:
+        exclude = {"tag_filter", "run_filter", "smooth", "xaxis", "logy",
+                   "order_rot", "zoom", "focus"}
+    elif persist:
+        explicit = _explicit_dests(argv)
+        for dest, attr in [("tags", "tag_filter"), ("experiments", "run_filter"),
+                           ("smooth", "smooth"), ("grid", "zoom")]:
+            if dest in explicit:
+                exclude.add(attr)
+
     app = App(
         reader, renderer,
         tag_filter=args.tags, run_filter=args.experiments, smooth=args.smooth,
         rows=rows, cols=cols, interval=args.interval,
         xaxis=str(cfg.get("xaxis", "step")), logy=bool(cfg.get("logy", False)),
         csv_dir=str(cfg.get("csv_dir", "")),
+        restore=persist, restore_exclude=exclude,
     )
     try:
         app.run(once=args.once)

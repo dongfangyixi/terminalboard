@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import bisect
 import fnmatch
+import hashlib
+import json
+import os
 import re
 import shutil
 import textwrap
@@ -115,6 +118,8 @@ class App:
         xaxis: str = "step",
         logy: bool = False,
         csv_dir: str = "",
+        restore: bool = False,
+        restore_exclude=(),
     ):
         self.reader = reader
         self.renderer = renderer
@@ -148,6 +153,68 @@ class App:
             key=lambda i: abs(_ZOOM_LADDER[i][0] * _ZOOM_LADDER[i][1] - target),
         )
         self.rows, self.cols = _ZOOM_LADDER[self._zoom]
+        # Per-logdir view persistence: restore the last session's filters/zoom/
+        # smoothing/etc. (CLI-explicit options win, via restore_exclude).
+        self._restore = restore
+        if restore:
+            self._load_view(exclude=restore_exclude)
+
+    # -- view persistence ----------------------------------------------------
+
+    def _view_state_file(self) -> str:
+        base = (os.environ.get("XDG_STATE_HOME")
+                or os.path.expanduser("~/.local/state"))
+        logdir = getattr(self.reader, "logdir", "") or ""
+        h = hashlib.sha1(logdir.encode()).hexdigest()[:12]
+        name = os.path.basename(logdir.rstrip("/")) or "root"
+        return os.path.join(base, "terminalboard", "views", f"{name}-{h}.json")
+
+    def _save_view(self) -> None:
+        try:
+            path = self._view_state_file()
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            state = {
+                "logdir": getattr(self.reader, "logdir", ""),
+                "tag_filter": self.tag_filter, "run_filter": self.run_filter,
+                "smooth": self.smooth, "xaxis": self.xaxis, "logy": self.logy,
+                "order_rot": self._order_rot, "zoom": self._zoom,
+                "focus": self._focus,
+            }
+            with open(path, "w") as f:
+                json.dump(state, f, indent=2)
+        except Exception:
+            pass            # persistence is best-effort; never break the session
+
+    def _load_view(self, exclude=()) -> None:
+        try:
+            path = self._view_state_file()
+            if not os.path.isfile(path):
+                return
+            with open(path) as f:
+                s = json.load(f)
+        except Exception:
+            return
+        if not isinstance(s, dict):
+            return
+        ex = set(exclude)
+        if "tag_filter" not in ex and "tag_filter" in s:
+            self.tag_filter = s["tag_filter"] or None
+        if "run_filter" not in ex and "run_filter" in s:
+            self.run_filter = s["run_filter"] or None
+        if "smooth" not in ex and isinstance(s.get("smooth"), (int, float)):
+            self.smooth = max(0.0, min(0.99, float(s["smooth"])))
+        if "xaxis" not in ex and s.get("xaxis") in ("step", "time"):
+            self.xaxis = s["xaxis"]
+        if "logy" not in ex and isinstance(s.get("logy"), bool):
+            self.logy = s["logy"]
+        if "order_rot" not in ex and isinstance(s.get("order_rot"), int):
+            self._order_rot = s["order_rot"]
+        if ("zoom" not in ex and isinstance(s.get("zoom"), int)
+                and 0 <= s["zoom"] < len(_ZOOM_LADDER)):
+            self._zoom = s["zoom"]
+            self.rows, self.cols = _ZOOM_LADDER[self._zoom]
+        if "focus" not in ex and isinstance(s.get("focus"), int):
+            self._focus = max(0, s["focus"])
 
     # -- tag selection -------------------------------------------------------
 
@@ -686,6 +753,13 @@ class App:
             self.render_once()
             return
 
+        try:
+            self._run_loop()
+        finally:
+            if self._restore:
+                self._save_view()
+
+    def _run_loop(self) -> None:
         with Screen() as screen, KeyReader() as keys:
             last_sig = None
             last_view = None
@@ -862,10 +936,11 @@ class App:
                 self._detail = self._matching_tags()[min(self._focus, last)]
                 self._detail_run = 0
                 self._scroll = 0
-                # start the x-cursor at the latest point
+                # Start the x-cursor in the MIDDLE so it's obvious it can move
+                # both ways (a cursor parked at the far right looks static).
                 names = self._detail_runs()
                 track = self._scalar_track(self._detail, names) if names else []
-                self._cursor = max(0, len(track) - 1)
+                self._cursor = max(0, (len(track) - 1) // 2)
         elif tok == "LEFT":
             self._focus = max(0, self._focus - 1)
         elif tok == "RIGHT":
@@ -1016,6 +1091,9 @@ class App:
             "",
             "  \033[1mPlot types\033[0m  scalars (curves) · text summaries · "
             "histograms (heatmap)",
+            "",
+            "  \033[1mView state\033[0m  filters, zoom, smoothing, axis and focus are",
+            "    saved per-logdir and restored next time (start fresh: --reset-view)",
             "",
             "  \033[2mPress any key to return…\033[0m",
         ])

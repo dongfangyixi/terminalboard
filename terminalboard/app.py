@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import bisect
 import fnmatch
+import hashlib
+import json
+import os
 import re
 import shutil
 import textwrap
@@ -112,6 +115,11 @@ class App:
         cols: int = 3,
         rows: int = 2,
         interval: float = 2.0,
+        xaxis: str = "step",
+        logy: bool = False,
+        csv_dir: str = "",
+        restore: bool = False,
+        restore_exclude=(),
     ):
         self.reader = reader
         self.renderer = renderer
@@ -133,6 +141,11 @@ class App:
         self._detail_run = 0   # which experiment is shown in detail (text/heatmap)
         self._scroll = 0       # scroll offset in a text detail view
         self._cursor = 0       # x-cursor index in a scalar detail view
+        self.xaxis = xaxis if xaxis in ("step", "time") else "step"
+        self.logy = bool(logy)  # log-scale y for scalar panels
+        self._textdiff = False  # text detail: show only keys that differ across runs
+        self._status = ""       # transient status line (e.g. after CSV export)
+        self._csv_dir = csv_dir  # default folder pre-filled in the CSV save prompt
         # Start at the ladder rung closest to the requested grid's panel count.
         target = max(1, rows) * max(1, cols)
         self._zoom = min(
@@ -140,6 +153,68 @@ class App:
             key=lambda i: abs(_ZOOM_LADDER[i][0] * _ZOOM_LADDER[i][1] - target),
         )
         self.rows, self.cols = _ZOOM_LADDER[self._zoom]
+        # Per-logdir view persistence: restore the last session's filters/zoom/
+        # smoothing/etc. (CLI-explicit options win, via restore_exclude).
+        self._restore = restore
+        if restore:
+            self._load_view(exclude=restore_exclude)
+
+    # -- view persistence ----------------------------------------------------
+
+    def _view_state_file(self) -> str:
+        base = (os.environ.get("XDG_STATE_HOME")
+                or os.path.expanduser("~/.local/state"))
+        logdir = getattr(self.reader, "logdir", "") or ""
+        h = hashlib.sha1(logdir.encode()).hexdigest()[:12]
+        name = os.path.basename(logdir.rstrip("/")) or "root"
+        return os.path.join(base, "terminalboard", "views", f"{name}-{h}.json")
+
+    def _save_view(self) -> None:
+        try:
+            path = self._view_state_file()
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            state = {
+                "logdir": getattr(self.reader, "logdir", ""),
+                "tag_filter": self.tag_filter, "run_filter": self.run_filter,
+                "smooth": self.smooth, "xaxis": self.xaxis, "logy": self.logy,
+                "order_rot": self._order_rot, "zoom": self._zoom,
+                "focus": self._focus,
+            }
+            with open(path, "w") as f:
+                json.dump(state, f, indent=2)
+        except Exception:
+            pass            # persistence is best-effort; never break the session
+
+    def _load_view(self, exclude=()) -> None:
+        try:
+            path = self._view_state_file()
+            if not os.path.isfile(path):
+                return
+            with open(path) as f:
+                s = json.load(f)
+        except Exception:
+            return
+        if not isinstance(s, dict):
+            return
+        ex = set(exclude)
+        if "tag_filter" not in ex and "tag_filter" in s:
+            self.tag_filter = s["tag_filter"] or None
+        if "run_filter" not in ex and "run_filter" in s:
+            self.run_filter = s["run_filter"] or None
+        if "smooth" not in ex and isinstance(s.get("smooth"), (int, float)):
+            self.smooth = max(0.0, min(0.99, float(s["smooth"])))
+        if "xaxis" not in ex and s.get("xaxis") in ("step", "time"):
+            self.xaxis = s["xaxis"]
+        if "logy" not in ex and isinstance(s.get("logy"), bool):
+            self.logy = s["logy"]
+        if "order_rot" not in ex and isinstance(s.get("order_rot"), int):
+            self._order_rot = s["order_rot"]
+        if ("zoom" not in ex and isinstance(s.get("zoom"), int)
+                and 0 <= s["zoom"] < len(_ZOOM_LADDER)):
+            self._zoom = s["zoom"]
+            self.rows, self.cols = _ZOOM_LADDER[self._zoom]
+        if "focus" not in ex and isinstance(s.get("focus"), int):
+            self._focus = max(0, s["focus"])
 
     # -- tag selection -------------------------------------------------------
 
@@ -196,14 +271,16 @@ class App:
             f"exp={runs_str} (\033[36mf\033[0m:{eflt})  "
             f"tags={len(tags)} (\033[36mt\033[0m:{tflt})  "
             f"page {page + 1}/{n_pages}  "
-            f"smooth={self.smooth:.2f}  mode={self.renderer.name}"
+            f"smooth={self.smooth:.2f}  x={self.xaxis}  "
+            f"y={'log' if self.logy else 'lin'}"
         )
 
     def _footer(self) -> str:
         per_page = self.rows * self.cols
         return (
             "\033[2m[arrows]focus [Enter]inspect [n/p]page [f/t]ilter "
-            f"[z/Z]zoom({per_page}) [o]rder [+/-/0]smooth [H]elp [q/Esc]uit\033[0m"
+            f"[z/Z]zoom({per_page}) [o]rder [+/-/0]smooth [x]axis [l]og "
+            "[w]csv [H]elp [q/Esc]uit\033[0m"
         )
 
     def _prompt_footer(self, label: str, text: str, pos: int, kind: str,
@@ -213,6 +290,9 @@ class App:
             shown = text[:pos] + "\033[7m" + text[pos] + "\033[0m" + text[pos + 1:]
         else:
             shown = text + "\033[7m \033[0m"
+        if kind not in ("tags", "runs"):                  # generic input prompt
+            return (f"\033[1m{label}>\033[0m {shown}  "
+                    "\033[2m(Enter save · Esc cancel)\033[0m")
         if warn:
             status = "\033[1;31m✗ no matches — pattern not applied\033[0m"
         else:
@@ -301,14 +381,15 @@ class App:
         cols, rows = shutil.get_terminal_size((100, 30))
         all_tags, page_tags, page, n_pages, focus_cell = self._layout()
         header = self._header(all_tags, page, n_pages)
-        footer = self._prompt_footer(*prompt) if prompt else self._footer()
+        footer = (self._prompt_footer(*prompt) if prompt
+                  else self._with_status(self._footer()))
         # Reserve the header + footer rows; the body must fit the rest so the
         # whole frame is never taller than the terminal (overflow scrolls and
         # would misalign the in-place repaint, leaving stale curves behind).
         body = self.renderer.frame(
             self._visible_runs(), page_tags, smooth=self.smooth, max_cols=self.cols,
             width=cols, height=max(4, rows - 2), run_colors=self._run_colors(),
-            run_order=self._run_order(),
+            run_order=self._run_order(), xaxis=self.xaxis, logy=self.logy,
             focus=(-1 if prompt else focus_cell),
         )
         frame = f"{header}\n{body}\n{footer}"
@@ -320,6 +401,126 @@ class App:
         # so width takes care of itself).
         lines = frame.split("\n")
         return "\n".join(lines[:rows])
+
+    def _with_status(self, footer: str) -> str:
+        if self._status:
+            return footer + f"   \033[1;32m{self._status}\033[0m"
+        return footer
+
+    def _current_tag(self) -> Optional[str]:
+        if self._detail is not None:
+            return self._detail
+        tags = self._matching_tags()
+        return tags[self._focus] if tags and self._focus < len(tags) else None
+
+    def _csv_default_path(self, tag: str) -> str:
+        """Default save path: <csv_dir>/<sanitized-tag>.csv (csv_dir from config)."""
+        import os
+        name = tag.strip("/").replace("/", "_") + ".csv"
+        base = os.path.expanduser(self._csv_dir) if self._csv_dir else ""
+        return os.path.join(base, name) if base else name
+
+    def _do_csv(self, screen, keys) -> None:
+        """Prompt for a path (pre-filled from config) and export the focused tag."""
+        tag = self._current_tag()
+        if not tag:
+            self._status = "nothing to export"
+            return
+        path = self._input_prompt(screen, keys, "save CSV",
+                                  self._csv_default_path(tag))
+        self._status = "" if path is None else self._export_csv(path)
+
+    def _export_csv(self, path: Optional[str] = None) -> str:
+        """Write the focused/detail scalar tag to ``path`` (default if None)."""
+        import csv
+        import os
+        tag = self._current_tag()
+        if not tag:
+            return "nothing to export"
+        runs = self._visible_runs()
+        names = [n for n in sorted(runs)
+                 if tag in runs[n].series and runs[n].series[tag].kind == "scalar"]
+        if not names:
+            return f"'{tag}' is not a scalar — CSV skipped"
+        lut = {n: dict(zip(runs[n].series[tag].steps, runs[n].series[tag].values))
+               for n in names}
+        steps = sorted({s for n in names for s in lut[n]})
+        path = os.path.expanduser(path or self._csv_default_path(tag))
+        try:
+            parent = os.path.dirname(path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(path, "w", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(["step"] + names)
+                for s in steps:
+                    w.writerow([s] + [lut[n].get(s, "") for n in names])
+        except OSError as e:
+            return f"export failed: {e}"
+        return f"✓ wrote {path} ({len(steps)} rows)"
+
+    def _input_prompt(self, screen, keys, label, initial):
+        """Modal single-line text input (returns the string, or None on Esc)."""
+        buf = list(initial or "")
+        pos = len(buf)
+        pending = []
+
+        def next_key():
+            nonlocal pending
+            if not pending:
+                chunk = keys.get(30)
+                if chunk is None:
+                    return None
+                if chunk == "\x1b":
+                    more = keys.get(0.03)
+                    if more:
+                        chunk += more
+                pending = self._parse_chunk(chunk)
+            return pending.pop(0) if pending else None
+
+        while True:
+            screen.draw(self._build_frame(
+                prompt=(label, "".join(buf), pos, "input", False)), hard=True)
+            key = next_key()
+            if key is None:
+                continue
+            if key in ("\r", "\n"):
+                return "".join(buf).strip()
+            if key in ("\x03", "\x04", "ESC"):
+                return None
+            if key in ("\x7f", "\b", "\x08"):
+                if pos > 0:
+                    del buf[pos - 1]
+                    pos -= 1
+            elif key == "DEL":
+                if pos < len(buf):
+                    del buf[pos]
+            elif key == "LEFT":
+                pos = max(0, pos - 1)
+            elif key == "RIGHT":
+                pos = min(len(buf), pos + 1)
+            elif key in ("HOME", "\x01"):
+                pos = 0
+            elif key in ("END", "\x05"):
+                pos = len(buf)
+            elif key == "\x15":
+                buf, pos = [], 0
+            elif key == "\x0b":
+                del buf[pos:]
+            elif key == "WORD-LEFT":
+                pos = _prev_word(buf, pos)
+            elif key == "WORD-RIGHT":
+                pos = _next_word(buf, pos)
+            elif key in ("WORD-DEL-BACK", "\x17"):
+                start = _prev_word(buf, pos)
+                del buf[start:pos]
+                pos = start
+            elif key == "WORD-DEL-FWD":
+                del buf[pos:_next_word(buf, pos)]
+            elif isinstance(key, str) and key.isprintable():
+                for c in key:
+                    buf.insert(pos, c)
+                    pos += 1
 
     # -- detail (drill-down) view -------------------------------------------
 
@@ -340,10 +541,15 @@ class App:
         body_h = max(2, rows - 2)
 
         if kind == "text":
-            sel = names[self._detail_run % len(names)]
-            header, body = self._text_detail(tag, sel, len(names), cols, body_h)
-            footer = ("\033[2m↑/↓ scroll · PgUp/PgDn · ←/→ switch exp · "
-                      "Esc back\033[0m")
+            if self._textdiff and len(names) > 1:
+                header, body = self._text_diff_detail(tag, names, cols, body_h)
+                footer = "\033[2m↑/↓ scroll · d full text · Esc back\033[0m"
+            else:
+                sel = names[self._detail_run % len(names)]
+                header, body = self._text_detail(tag, sel, len(names), cols, body_h)
+                diff = " · d diff" if len(names) > 1 else ""
+                footer = ("\033[2m↑/↓ scroll · PgUp/PgDn · ←/→ switch exp"
+                          f"{diff} · Esc back\033[0m")
         elif kind == "scalar":
             return self._scalar_detail(tag, names, cols, rows, body_h)
         else:                                            # histogram
@@ -359,7 +565,7 @@ class App:
             )
             switch = "←/→ switch exp · " if len(names) > 1 else ""
             footer = f"\033[2m{switch}Esc back\033[0m"
-        return self._crop(f"{header}\n{body}\n{footer}", rows)
+        return self._crop(f"{header}\n{body}\n{self._with_status(footer)}", rows)
 
     # -- scalar detail with a TensorBoard-style x-cursor + readout -----------
 
@@ -375,9 +581,30 @@ class App:
         return f"+{h}h{m:02d}m"
 
     def _scalar_track(self, tag, names) -> List[int]:
-        """Cursor stops = every real data step (so ←/→ moves one point)."""
+        """Cursor stops = the UNION of every visible run's steps, so ←/→ can reach
+        the last point among all experiments (not just one run's last step)."""
         runs = self._visible_runs()
-        return sorted({st for n in names for st in runs[n].series[tag].steps})
+        steps = set()
+        for n in names:
+            steps.update(runs[n].series[tag].steps)
+        return sorted(steps)
+
+    def _cursor_time(self, tag, names, cstep) -> float:
+        """Relative wall-time for the cursor on the time axis: take the
+        furthest-reaching run's time at the step nearest ``cstep``."""
+        runs = self._visible_runs()
+        best = None                      # (reach, reltime)
+        for n in names:
+            s = runs[n].series[tag]
+            if not s.steps or not s.wall_times:
+                continue
+            i = self._nearest_index(s.steps, cstep)
+            if i >= len(s.wall_times):
+                continue
+            reach, reltime = s.steps[-1], s.wall_times[i] - s.wall_times[0]
+            if best is None or reach > best[0]:
+                best = (reach, reltime)
+        return best[1] if best else cstep
 
     def _nearest_index(self, steps, target) -> int:
         i = bisect.bisect_left(steps, target)
@@ -398,9 +625,11 @@ class App:
         self._cursor = max(0, min(self._cursor, len(track) - 1))
         cstep = track[self._cursor]
 
-        # Per-run readout at the cursor step.
+        # Per-run readout at the cursor step (full run names, aligned).
         readout: List[str] = []
-        for n in names[:8]:
+        shown = names[:8]
+        namew = max((len(n) for n in shown), default=4)
+        for n in shown:
             s = runs[n].series[tag]
             if not s.steps:
                 continue
@@ -412,20 +641,34 @@ class App:
                 rt = "  t " + self._fmt_reltime(s.wall_times[i] - s.wall_times[0])
             code = _RUN_STYLES[rc.get(n, 0) % len(_RUN_STYLES)][1]
             readout.append(
-                f"\033[{code}m●\033[0m {n[:20]:<20} step {s.steps[i]:>8}  "
+                f"\033[{code}m●\033[0m {n:<{namew}}  step {s.steps[i]:>8}  "
                 f"value {val:< 12.5g} smoothed {sm:< 12.5g}{rt}"
             )
+
+        # Cursor x in the active axis domain (so the vertical line lands right).
+        cx = self._cursor_time(tag, names, cstep) if self.xaxis == "time" else cstep
 
         plot_h = max(2, body_h - len(readout))
         plot = self.renderer.detail_scalar(
             runs, tag, order=self._run_order(), run_color=rc,
-            w=cols, h=plot_h, smooth=self.smooth, cursor_step=cstep,
+            w=cols, h=plot_h, smooth=self.smooth, cursor_x=cx,
+            xaxis=self.xaxis, logy=self.logy,
         )
+        axes = f"x={self.xaxis} y={'log' if self.logy else 'lin'}"
         header = (f"\033[1m{tag}\033[0m  cursor @ step {cstep}  "
-                  f"({self._cursor + 1}/{len(track)})  exps={len(names)}")
-        footer = ("\033[2m←/→ cursor · Shift+←/→ fast · Home/End · "
-                  "+/- smooth · Esc back\033[0m")
+                  f"({self._cursor + 1}/{len(track)})  exps={len(names)}  {axes}")
+        footer = self._with_status(
+            "\033[2m←/→ cursor · Shift+←/→ fast · Home/End · "
+            "+/- smooth · x axis · l log · w csv · Esc back\033[0m")
         return self._crop("\n".join([header, plot] + readout + [footer]), rows)
+
+    def _scroll_view(self, lines, w, h):
+        """Clamp self._scroll and return (h fitted lines, total)."""
+        total = len(lines)
+        self._scroll = max(0, min(self._scroll, max(0, total - h)))
+        view = [l for l in lines[self._scroll:self._scroll + h]]
+        view += [""] * (h - len(view))
+        return view, total
 
     def _text_detail(self, tag, run_name, n_runs, w, h):
         series = self._visible_runs()[run_name].series[tag]
@@ -433,12 +676,45 @@ class App:
         wrapped: List[str] = []
         for para in text.split("\n"):
             wrapped.extend(textwrap.wrap(para, w) or [""])
-        total = len(wrapped)
-        self._scroll = max(0, min(self._scroll, max(0, total - h)))
-        view = wrapped[self._scroll:self._scroll + h]
-        view = view + [""] * (h - len(view))
+        view, total = self._scroll_view(wrapped, w, h)
         idx = self._detail_run % max(1, n_runs)
         header = (f"\033[1m{tag}\033[0m  [{run_name}]  exp {idx + 1}/{n_runs}  "
+                  f"lines {self._scroll + 1}–{min(total, self._scroll + h)}/{total}")
+        return header, "\n".join(view)
+
+    @staticmethod
+    def _parse_kv(text):
+        """Pull key→value pairs from config-ish text (JSON / `k: v` / `k = v`)."""
+        d = {}
+        for line in text.splitlines():
+            line = line.strip().rstrip(",")
+            m = re.match(r'^"?([\w./\- ]+?)"?\s*[:=]\s*(.+)$', line)
+            if m:
+                d[m.group(1).strip()] = m.group(2).strip()
+        return d
+
+    def _text_diff_detail(self, tag, names, w, h):
+        from .render import _RUN_STYLES
+        runs = self._visible_runs()
+        rc = self._run_colors()
+        parsed = {n: self._parse_kv(runs[n].series[tag].texts[-1]
+                                    if runs[n].series[tag].texts else "")
+                  for n in names}
+        keys = sorted({k for d in parsed.values() for k in d})
+        lines: List[str] = []
+        for k in keys:
+            vals = [parsed[n].get(k, "—") for n in names]
+            if len(set(vals)) <= 1:
+                continue                                # identical → not a diff
+            lines.append(f"\033[1m{k}\033[0m")
+            for n in names:
+                code = _RUN_STYLES[rc.get(n, 0) % len(_RUN_STYLES)][1]
+                lines.append(f"  \033[{code}m●\033[0m {n[:18]:<18} "
+                             f"{parsed[n].get(k, '—')}")
+        if not lines:
+            lines = ["(no differing keys — configs are identical, or not key:value)"]
+        view, total = self._scroll_view(lines, w, h)
+        header = (f"\033[1m{tag}\033[0m  diff across {len(names)} experiments  "
                   f"lines {self._scroll + 1}–{min(total, self._scroll + h)}/{total}")
         return header, "\n".join(view)
 
@@ -450,7 +726,7 @@ class App:
         page = self._focus // per_page
         return (page, round(self.smooth, 3), self.rows, self.cols,
                 self.tag_filter, self.run_filter, self.renderer.name,
-                self._order_rot, self._detail,
+                self._order_rot, self._detail, self.xaxis, self.logy,
                 shutil.get_terminal_size((100, 30)))
 
     def _signature(self):
@@ -463,8 +739,8 @@ class App:
                 total += len(s)
                 if s.steps:
                     last_step = max(last_step, s.steps[-1])
-        return (total, last_step, self._focus, self._detail_run,
-                self._scroll, self._cursor) + self._view_sig()
+        return (total, last_step, self._focus, self._detail_run, self._scroll,
+                self._cursor, self._textdiff, self._status) + self._view_sig()
 
     def render_once(self) -> None:
         self.reader.poll()
@@ -477,6 +753,13 @@ class App:
             self.render_once()
             return
 
+        try:
+            self._run_loop()
+        finally:
+            if self._restore:
+                self._save_view()
+
+    def _run_loop(self) -> None:
         with Screen() as screen, KeyReader() as keys:
             last_sig = None
             last_view = None
@@ -500,7 +783,7 @@ class App:
                         break
                     for tok in self._parse_chunk(chunk):
                         if self._detail is not None:
-                            if self._handle_detail_key(tok) == "quit":
+                            if self._handle_detail_key(screen, keys, tok) == "quit":
                                 return
                         elif self._handle_grid_key(screen, keys, tok):
                             return  # quit
@@ -635,10 +918,14 @@ class App:
 
     def _handle_grid_key(self, screen, keys, tok: str) -> bool:
         """Handle a key in the grid (overview). Return True to quit."""
+        if tok != "w":
+            self._status = ""
         per_page = max(1, self.rows * self.cols)
         n = len(self._matching_tags())
         last = max(0, n - 1)
-        if tok in ("f", "t"):
+        if tok == "w":
+            self._do_csv(screen, keys)
+        elif tok in ("f", "t"):
             self._edit_filter(screen, keys, "tags" if tok == "t" else "runs")
         elif tok in ("H", "?"):
             self._show_help(screen, keys)
@@ -649,10 +936,11 @@ class App:
                 self._detail = self._matching_tags()[min(self._focus, last)]
                 self._detail_run = 0
                 self._scroll = 0
-                # start the x-cursor at the latest point
+                # Start the x-cursor in the MIDDLE so it's obvious it can move
+                # both ways (a cursor parked at the far right looks static).
                 names = self._detail_runs()
                 track = self._scalar_track(self._detail, names) if names else []
-                self._cursor = max(0, len(track) - 1)
+                self._cursor = max(0, (len(track) - 1) // 2)
         elif tok == "LEFT":
             self._focus = max(0, self._focus - 1)
         elif tok == "RIGHT":
@@ -685,17 +973,26 @@ class App:
             self.rows, self.cols = _ZOOM_LADDER[self._zoom]
         elif ch == "o":
             self._order_rot += 1
+        elif ch == "l":
+            self.logy = not self.logy
+        elif ch == "x":
+            self.xaxis = "time" if self.xaxis == "step" else "step"
 
-    def _handle_detail_key(self, tok: str):
+    def _handle_detail_key(self, screen, keys, tok: str):
         """Handle a key in the detail (drill-down) view.
 
         Returns 'quit' only on Ctrl-C/Ctrl-D; Esc just goes *back* to the grid
         (press Esc again there to quit). 'q' does nothing here."""
         if tok in ("\x03", "\x04"):                     # Ctrl-C / Ctrl-D
             return "quit"
+        if tok != "w":
+            self._status = ""
         if tok in ("ESC", "\r", "\n"):                  # back to grid
             self._detail = None
             self._scroll = 0
+            return None
+        if tok == "w":
+            self._do_csv(screen, keys)
             return None
         names = self._detail_runs()
         if not names:
@@ -740,6 +1037,9 @@ class App:
             elif tok == "RIGHT":
                 self._detail_run = (self._detail_run + 1) % nruns
                 self._scroll = 0
+            elif tok == "d":                            # toggle config-diff
+                self._textdiff = not self._textdiff
+                self._scroll = 0
             elif len(tok) == 1:
                 self._handle_view_key(tok)
         else:                                           # histogram: ←/→ switch exp
@@ -753,49 +1053,134 @@ class App:
 
     # -- help overlay --------------------------------------------------------
 
-    def _help_text(self) -> str:
-        return "\n".join([
-            "  \033[1mterminalboard\033[0m — help",
-            "",
-            "  \033[1mNavigation\033[0m",
-            "    ←/↑/↓/→         move focus        Enter        inspect (full screen)",
-            "    n / space / j   next page         p / k        previous page",
-            "    z / Z           zoom out / in     o            cycle curve order (z)",
-            "    r               refresh now       q / Esc      quit",
-            "",
-            "  \033[1mDetail view\033[0m (after Enter)",
-            "    curve:  ←/→ move cursor (value/step/time readout) · Shift+←/→ fast",
-            "    text:   ↑/↓ · PgUp/PgDn scroll · ←/→ switch experiment",
-            "    histogram:  ←/→ switch experiment",
-            "    Esc     back to grid (Esc again to quit)",
-            "",
-            "  \033[1mSmoothing\033[0m",
-            "    + / =  more      -  less      0  off",
-            "",
-            "  \033[1mFiltering\033[0m",
-            "    t  edit tag filter        f  edit experiment filter",
-            "    In the prompt:  ←/→ move   ↑/↓ history   Home/End or ^A/^E",
-            "                    ^W del word   ^K kill-to-end   ^U clear",
-            "                    Alt/Ctrl+←/→ word move   Enter apply   Esc cancel",
-            "",
-            "  \033[1mFilter syntax\033[0m (tags and experiments)",
-            "    word         case-insensitive substring   (loss → train/loss)",
-            "    a b          AND  (both must match)",
-            "    a | b , c    OR   (| or , separate alternatives)",
-            "    * ? [ ]      glob wildcards                (train/*loss*)",
-            "    !word        NOT  (exclude)",
-            "    /regex/      regex (case-insensitive); wrap the WHOLE filter "
-            "for | or spaces",
-            "",
-            "  \033[1mPlot types\033[0m  scalars (curves) · text summaries · "
-            "histograms (heatmap)",
-            "",
-            "  \033[2mPress any key to return…\033[0m",
-        ])
+    def _help_lines(self) -> List[str]:
+        """Single-column help: one binding per line, key → action, with color."""
+        BOLD, DIM, RST = "\033[1m", "\033[2m", "\033[0m"
+        HDR = "\033[1;33m"          # bold yellow section header
+        KEY = "\033[1;36m"          # bold cyan key
+        KW = 15                     # key column width
+
+        def hdr(t):
+            return f"{HDR}{t}{RST}"
+
+        def row(k, d):
+            return f"  {KEY}{k:<{KW}}{RST} {d}"
+
+        def note(t):
+            return f"  {DIM}{t}{RST}"
+
+        L: List[str] = []
+        L.append(f"{BOLD}terminalboard{RST} {DIM}— keyboard help{RST}")
+        L.append("")
+        L.append(hdr("Navigation"))
+        L += [
+            row("←/↑/↓/→", "move focus between panels"),
+            row("Enter", "inspect focused panel (full screen)"),
+            row("n / Space / j", "next page"),
+            row("p / k", "previous page"),
+            row("z / Z", "zoom out / in (panels per page)"),
+            row("o", "cycle curve order (which run is on top)"),
+            row("x", "x-axis: step ↔ time"),
+            row("l", "toggle log-scale Y"),
+            row("w", "export focused scalar to CSV"),
+            row("r", "refresh now"),
+            row("q / Esc", "quit"),
+        ]
+        L.append("")
+        L.append(hdr("Detail view — curve") + DIM + "  (after Enter)" + RST)
+        L += [
+            row("←/→", "move cursor (readout: value / step / time)"),
+            row("Shift+←/→", "move cursor faster"),
+            row("Home / End", "jump to first / last point"),
+        ]
+        L.append(hdr("Detail view — text"))
+        L += [
+            row("↑/↓  PgUp/PgDn", "scroll"),
+            row("←/→", "switch experiment"),
+            row("d", "config diff (only the keys that differ)"),
+        ]
+        L.append(hdr("Detail view — histogram"))
+        L += [row("←/→", "switch experiment")]
+        L.append(row("Esc", "back to grid (Esc again to quit)"))
+        L.append("")
+        L.append(hdr("Smoothing"))
+        L += [
+            row("+ / =", "more"),
+            row("-", "less"),
+            row("0", "off"),
+        ]
+        L.append("")
+        L.append(hdr("Filtering"))
+        L += [
+            row("t", "edit tag filter"),
+            row("f", "edit experiment filter"),
+        ]
+        L.append(note("in the filter prompt:"))
+        L += [
+            row("←/→", "move cursor"),
+            row("↑/↓", "recall previous patterns"),
+            row("Home/End", "line start / end  (also ^A / ^E)"),
+            row("^W / ^K / ^U", "delete word / kill-to-end / clear"),
+            row("Alt/Ctrl+←/→", "move by word"),
+            row("Enter / Esc", "apply / cancel"),
+        ]
+        L.append("")
+        L.append(hdr("Filter syntax") + DIM + "  (tags and experiments)" + RST)
+        L += [
+            row("word", "case-insensitive substring  (loss → train/loss)"),
+            row("a b", "AND  (both must match)"),
+            row("a | b , c", "OR  (| or , separate alternatives)"),
+            row("* ? [ ]", "glob wildcards  (train/*loss*)"),
+            row("!word", "NOT  (exclude)"),
+            row("/regex/", "regex; wrap the WHOLE filter for | or spaces"),
+        ]
+        L.append("")
+        L.append(hdr("Plot types"))
+        L.append(note("scalars (curves) · text summaries · histograms (heatmap)"))
+        L.append("")
+        L.append(hdr("View state"))
+        L.append(note("filters, zoom, smoothing, axis, order and focus are saved"))
+        L.append(note("per-logdir and restored next time  (start fresh: --reset-view)"))
+        return L
 
     def _show_help(self, screen, keys) -> None:
         cols, rows = shutil.get_terminal_size((100, 30))
-        lines = self._help_text().split("\n")[:rows]
-        screen.draw("\n".join(lines), hard=True)
-        while keys.get(30) is None:        # wait for any key
-            pass
+        lines = self._help_lines()
+        body_h = max(1, rows - 1)              # reserve a row for the footer
+        maxscroll = max(0, len(lines) - body_h)
+        scroll = 0
+        while True:
+            view = lines[scroll:scroll + body_h]
+            view += [""] * (body_h - len(view))
+            if maxscroll:
+                pos = f"{scroll + 1}-{min(len(lines), scroll + body_h)}/{len(lines)}"
+                foot = (f"\033[2m  ↑/↓ PgUp/PgDn scroll · "
+                        f"any other key to return   ({pos})\033[0m")
+            else:
+                foot = "\033[2m  press any key to return…\033[0m"
+            screen.draw("\n".join(view + [foot]), hard=True)
+            chunk = keys.get(30)
+            if chunk is None:
+                continue
+            if not maxscroll:                  # everything fits → any key returns
+                return
+            done = False
+            for tok in self._parse_chunk(chunk):
+                if tok == "UP":
+                    scroll -= 1
+                elif tok == "DOWN":
+                    scroll += 1
+                elif tok == "PGUP":
+                    scroll -= body_h
+                elif tok == "PGDN":
+                    scroll += body_h
+                elif tok == "HOME":
+                    scroll = 0
+                elif tok == "END":
+                    scroll = maxscroll
+                else:                          # any non-scroll key returns
+                    done = True
+                    break
+                scroll = max(0, min(scroll, maxscroll))
+            if done:
+                return

@@ -71,6 +71,7 @@ so the whole thing is pure text with no browser or image protocol needed.
 ```bash
 pip install terminalboard            # everything you need by default
 pip install 'terminalboard[tb]'      # + tensorboard (--tb alternate parser)
+uvx terminalboard <logdir>           # or run without installing (uv) / pipx run terminalboard
 ```
 
 The base install pulls only `plotext` and is fully functional on its own — the
@@ -108,6 +109,19 @@ terminalboard LOGDIR [options]
   --list              list all tags and exit
 ```
 
+### Try it without your own logs
+
+The repo ships a generator that writes a demo logdir with 3 experiments and
+every supported type (scalars, text, histograms):
+
+```bash
+python examples/gen_demo_logs.py     # writes ./demo_logs/
+terminalboard demo_logs
+```
+
+A demo recording can be produced with `scripts/record_demo.sh` (needs
+[`asciinema`](https://asciinema.org/) + [`agg`](https://github.com/asciinema/agg)).
+
 ```bash
 terminalboard ../tb_logs                       # live dashboard
 terminalboard ../tb_logs --tags 'train/*loss*' # filter to loss curves
@@ -135,14 +149,21 @@ A page can mix any of these — the panel adapts to each tag's kind:
 | `o` | cycle which overlapping curve is drawn on top (z-order) |
 | `z` / `Z` | zoom out / in — panels per page: `1·2·4·6·9·12·16·24·36` |
 | `+` / `-` / `0` | more / less / no smoothing |
+| `x` / `l` | x-axis step↔time / toggle log-Y (scalars) |
+| `w` | export the focused scalar tag to a CSV |
 | `r` | refresh now |
 | `H` / `?` | full help overlay |
 | `q` / `Esc` | quit |
 
 **Detail view** (after `Enter`): a single tag full-screen. **`Esc`** returns to
-the grid. By type: **scalars** overlay all experiments; **histograms** show one
-experiment (`←/→` switches); **text** is scrollable (`↑/↓`, `PgUp/PgDn`,
-`Home/End`) with `←/→` to switch experiment.
+the grid. By type:
+- **scalars** overlay all experiments, with a **cursor** — `←/→` move it one data
+  point (`Shift+←/→` fast), and a per-experiment **value / smoothed / step /
+  wall-time** readout updates beneath the plot. `x`/`l` change axis/scale.
+- **histograms** show one experiment as a heatmap (`←/→` switches).
+- **text** is scrollable (`↑/↓`, `PgUp/PgDn`, `Home/End`), `←/→` switch
+  experiment, and **`d`** shows a **config diff** — only the keys that differ
+  across experiments.
 
 In the filter prompt: **←/→** move, **↑/↓** recall history, **Home/End** (or
 `^A`/`^E`), **^W** delete word, **^K** kill-to-end, **^U** clear, **Alt/Ctrl+←/→**
@@ -171,10 +192,12 @@ only if a currently-visible experiment has it.
 ### Multiple experiments
 
 When a logdir holds several runs, their curves are **overlaid in each panel**,
-each experiment in its own color, with a legend above the grid. Colors are
-**stable** — an experiment keeps its color no matter which others you filter in
-or out — so you can always tell which curve is which. Use `f` (or
-`--experiments`) to focus on a subset.
+each experiment in its own color, with a legend above the grid showing the
+**full run names** (wrapping over multiple lines if needed — never truncated, so
+you can read the exact names when filtering). Colors are **stable** — an
+experiment keeps its color no matter which others you filter in or out. Use `f`
+(or `--experiments`) to focus on a subset. Panel titles show the **full tag
+path** (leading-ellipsis only when the panel is too narrow).
 
 In the filter prompt: **←/→** move the cursor, **↑/↓** recall previous patterns,
 **Home/End** (or `^A`/`^E`) jump, `^U` clears. If a pattern matches nothing the
@@ -198,6 +221,37 @@ until you fix or cancel it.
     └┬─────────────────┬──────────────────┬─────────────────┬─────────────────┬┘
     10               1510               3010              4510             6010
 ```
+
+## Config file
+
+Set defaults in `~/.config/terminalboard.toml` (or point `$TERMINALBOARD_CONFIG`
+at a file). CLI flags override it. Needs Python 3.11+ (`tomllib`) or `tomli`.
+
+```toml
+[terminalboard]
+smooth = 0.6
+grid = "2x3"
+interval = 2.0
+xaxis = "step"   # or "time"
+logy = false
+tags = "train/*"
+# experiments = "baseline | scaling"
+# tb = true
+# csv_dir = "~/tb-exports"   # pre-filled folder in the CSV save (w) prompt
+# restore = true             # save/restore per-logdir view state (default: on)
+```
+
+`w` opens a path prompt pre-filled with `<csv_dir>/<tag>.csv` (editable; Enter
+saves, Esc cancels).
+
+### Saved view state
+
+Your filters, zoom level, smoothing, x-axis, log-Y, curve order and focus are
+saved **per logdir** when you quit, and restored the next time you open the same
+logdir — so you pick up where you left off. State lives under
+`$XDG_STATE_HOME/terminalboard/views/` (default `~/.local/state/...`). Explicit
+CLI flags (e.g. `--tags`, `--smooth`) override the saved values; `--reset-view`
+starts fresh, and `restore = false` in the config turns persistence off.
 
 ## Roadmap
 

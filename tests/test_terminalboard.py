@@ -159,11 +159,11 @@ def test_detail_text_scroll_and_switch(logdir):
     assert a._detail == "note/info"
     frame = a._build_detail_frame()
     assert "note/info" in frame
-    a._handle_detail_key("DOWN")
+    a._handle_detail_key(_FakeScreen(), None, "DOWN")
     assert a._scroll == 1
-    a._handle_detail_key("RIGHT")                        # switch experiment (wraps)
+    a._handle_detail_key(_FakeScreen(), None, "RIGHT")                        # switch experiment (wraps)
     assert a._build_detail_frame().strip()
-    a._handle_detail_key("ESC")                          # back to grid
+    a._handle_detail_key(_FakeScreen(), None, "ESC")                          # back to grid
     assert a._detail is None
 
 
@@ -175,7 +175,7 @@ def test_detail_histogram_and_scalar(logdir):
         a._handle_grid_key(_FakeScreen(), None, "\r")
         assert a._detail == tag
         assert a._build_detail_frame().strip()
-        a._handle_detail_key("ESC")
+        a._handle_detail_key(_FakeScreen(), None, "ESC")
 
 
 def test_scalar_detail_cursor(logdir):
@@ -183,15 +183,140 @@ def test_scalar_detail_cursor(logdir):
     a.tag_filter = "train/loss"
     a._handle_grid_key(_FakeScreen(), None, "\r")
     track = a._scalar_track("train/loss", a._detail_runs())
-    assert a._cursor == len(track) - 1           # starts at the latest point
-    a._handle_detail_key("LEFT")
-    assert a._cursor == len(track) - 2
-    a._handle_detail_key("HOME")
+    mid = (len(track) - 1) // 2
+    assert a._cursor == mid                       # starts in the middle
+    a._handle_detail_key(_FakeScreen(), None, "LEFT")
+    assert a._cursor == mid - 1
+    a._handle_detail_key(_FakeScreen(), None, "HOME")
     assert a._cursor == 0
-    a._handle_detail_key("END")
+    a._handle_detail_key(_FakeScreen(), None, "END")
     assert a._cursor == len(track) - 1
     frame = a._build_detail_frame()
     assert "cursor @ step" in frame and "value" in frame and "smoothed" in frame
+
+
+def test_scalar_cursor_track_is_union_of_runs(tmp_path):
+    # two runs of different length: cursor must reach the longer run's last step
+    import conftest as C
+    for name, n in [("short", 5), ("long", 12)]:
+        d = tmp_path / name
+        d.mkdir()
+        C.write_events(d / "events.out.tfevents.1.h.1.0",
+                       [(i, [C.scalar_value("m", float(i))]) for i in range(n)])
+    a = App(make_reader(str(tmp_path)), TextRenderer())
+    a.reader.poll()
+    a.tag_filter = "m"
+    a._handle_grid_key(_FakeScreen(), None, "\r")
+    track = a._scalar_track("m", a._detail_runs())
+    assert track[-1] == 11                       # union reaches the long run
+    assert a._cursor == (len(track) - 1) // 2    # starts in the middle
+    a._handle_detail_key(_FakeScreen(), None, "END")
+    assert track[a._cursor] == 11                # END lands on the furthest point
+
+
+def test_config_diff(tmp_path):
+    # two runs whose config differs in one key
+    import conftest as C
+    for name, lr in [("a", "0.001"), ("b", "0.003")]:
+        d = tmp_path / name
+        d.mkdir()
+        cfg = '{\n  "lr": %s,\n  "model": "resnet"\n}' % lr
+        C.write_events(d / "events.out.tfevents.1.h.1.0",
+                       [(0, [C.text_value("config", cfg)])])
+    a = App(make_reader(str(tmp_path)), TextRenderer())
+    a.reader.poll()
+    a.tag_filter = "config"
+    a._handle_grid_key(_FakeScreen(), None, "\r")
+    a._handle_detail_key(_FakeScreen(), None, "d")                       # toggle diff
+    frame = a._build_detail_frame()
+    assert "diff across 2 experiments" in frame
+    assert "lr" in frame and "0.001" in frame and "0.003" in frame
+    assert "model" not in frame                     # identical key is hidden
+
+
+def test_csv_export(logdir, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    a = _app(logdir)
+    a.tag_filter = "train/loss"
+    msg = a._export_csv()
+    assert "wrote" in msg
+    f = tmp_path / "train_loss.csv"
+    assert f.exists()
+    lines = f.read_text().splitlines()
+    assert lines[0].startswith("step,") and len(lines) > 1
+
+
+def test_csv_export_skips_nonscalar(logdir, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    a = _app(logdir)
+    a.tag_filter = "note/info"          # a text tag
+    assert "not a scalar" in a._export_csv()
+
+
+def test_csv_prompt_uses_csv_dir(logdir, tmp_path):
+    out = tmp_path / "out"
+    a = App(make_reader(str(logdir)), TextRenderer(), csv_dir=str(out))
+    a.reader.poll()
+    a.tag_filter = "train/loss"
+    assert a._csv_default_path("train/loss") == str(out / "train_loss.csv")
+
+    class _Keys:
+        def __init__(self, seq):
+            self.q = list(seq)
+
+        def get(self, _t):
+            return self.q.pop(0) if self.q else None
+
+    a._do_csv(_FakeScreen(), _Keys(["\r"]))            # accept default
+    assert (out / "train_loss.csv").exists()
+    a._do_csv(_FakeScreen(), _Keys(["\x1b"]))          # Esc cancels
+    assert a._status == ""
+
+
+def test_view_state_persists(logdir, tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    a = App(make_reader(str(logdir)), TextRenderer(), restore=True)
+    a.reader.poll()
+    a.tag_filter = "train/loss"
+    a.run_filter = "run_a"
+    a.smooth = 0.85
+    a.xaxis = "time"
+    a.logy = True
+    a._zoom = 1
+    a._focus = 0
+    a._save_view()
+    # a fresh app on the same logdir restores it
+    b = App(make_reader(str(logdir)), TextRenderer(), restore=True)
+    assert b.tag_filter == "train/loss"
+    assert b.run_filter == "run_a"
+    assert b.smooth == 0.85
+    assert b.xaxis == "time"
+    assert b.logy is True
+    assert b._zoom == 1
+    # restore_exclude lets an explicit CLI value win (not overwritten by saved)
+    c = App(make_reader(str(logdir)), TextRenderer(), restore=True,
+            tag_filter="other", restore_exclude={"tag_filter"})
+    assert c.tag_filter == "other"
+    assert c.smooth == 0.85                       # still restored
+
+
+def test_config_load(tmp_path, monkeypatch):
+    pytest.importorskip("tomllib")      # stdlib on 3.11+
+    cfg = tmp_path / "c.toml"
+    cfg.write_text('[terminalboard]\nsmooth = 0.9\ngrid = "3x3"\nlogy = true\n')
+    monkeypatch.setenv("TERMINALBOARD_CONFIG", str(cfg))
+    from terminalboard.cli import load_config
+    c = load_config()
+    assert c["smooth"] == 0.9 and c["grid"] == "3x3" and c["logy"] is True
+
+
+def test_logy_and_xaxis_toggle(logdir):
+    a = _app(logdir)
+    a._handle_view_key("l")
+    assert a.logy is True
+    a._handle_view_key("x")
+    assert a.xaxis == "time"
+    assert a._build_frame().strip()                 # renders without error
 
 
 def test_detail_q_does_not_quit_esc_goes_back(logdir):
@@ -199,9 +324,9 @@ def test_detail_q_does_not_quit_esc_goes_back(logdir):
     a.tag_filter = "train/loss"
     a._handle_grid_key(_FakeScreen(), None, "\r")
     assert a._detail == "train/loss"
-    assert a._handle_detail_key("q") is None      # q does nothing in detail
+    assert a._handle_detail_key(_FakeScreen(), None, "q") is None      # q does nothing in detail
     assert a._detail == "train/loss"              # still in detail
-    a._handle_detail_key("ESC")                   # Esc -> back to grid
+    a._handle_detail_key(_FakeScreen(), None, "ESC")                   # Esc -> back to grid
     assert a._detail is None
     # and from the grid, Esc quits
     assert a._handle_grid_key(_FakeScreen(), None, "ESC") is True

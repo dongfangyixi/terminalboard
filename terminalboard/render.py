@@ -68,6 +68,65 @@ def shorten_tag(tag: str, maxlen: int) -> str:
     return "…" + leaf[-(maxlen - 1):]
 
 
+def title_tag(tag: str, maxlen: int) -> str:
+    """Show the FULL tag path; if too wide, keep the tail (leaf + as much of the
+    namespace as fits) with a leading ellipsis — never just the leaf."""
+    if maxlen <= 0 or len(tag) <= maxlen:
+        return tag
+    if maxlen <= 1:
+        return tag[-maxlen:]
+    return "…" + tag[-(maxlen - 1):]
+
+
+def wrap_title(tag: str, w: int, max_lines: int):
+    """Wrap a tag across up to ``max_lines`` lines of width ``w`` (char-wise),
+    **balancing** the line lengths so every line is roughly equal — that way each
+    line, once centered, shows margins on both sides instead of the first line
+    filling the whole width.
+
+    If it doesn't fit in ``max_lines`` lines of width ``w``, the last line keeps
+    the tail (leaf) with a leading ellipsis so the most specific part stays
+    visible."""
+    w = max(1, w)
+    need = max(1, -(-len(tag) // w))          # min lines to fit at width w
+    if need <= max_lines:
+        lines = need
+        size = -(-len(tag) // lines)          # even chunk size = ceil(len/lines)
+        return [tag[i:i + size] for i in range(0, len(tag), size)] or [""]
+    # Too long even for max_lines: fill the first lines, keep the leaf on the last.
+    head = [tag[i:i + w] for i in range(0, (max_lines - 1) * w, w)]
+    rest = tag[(max_lines - 1) * w:]
+    last = rest if len(rest) <= w else "…" + rest[-(w - 1):]
+    return head + [last]
+
+
+_TITLE_MARGIN = 3      # keep the title this many cols short of the panel edge so
+                       # adjacent titles have a clear gap (the plot below fills w)
+
+
+def _title_w(w: int) -> int:
+    return max(4, w - _TITLE_MARGIN)
+
+
+def title_lines_needed(tag: str, w: int) -> int:
+    iw = _title_w(w)
+    return max(1, -(-len(tag) // max(1, iw)))    # ceil(len/inner_width)
+
+
+def _title_block(tag: str, w: int, rows: int):
+    """Bold title lines, wrapped to a margin-narrowed width and **centered** within
+    the full panel width (exactly ``rows`` lines; empty list when rows<=0)."""
+    if rows <= 0:
+        return []
+    out = []
+    for c in wrap_title(tag, _title_w(w), rows):
+        pad = max(0, (w - len(c)) // 2)          # equal-ish margins on both sides
+        out.append(_fit(" " * pad + "\033[1m" + c + "\033[0m", w))
+    while len(out) < rows:
+        out.append(" " * w)
+    return out[:rows]
+
+
 def grid_dims(n: int, max_cols: int = 3):
     """Choose (rows, cols) for ``n`` panels."""
     if n <= 0:
@@ -87,15 +146,25 @@ def _reset_plotext(plt) -> None:
         plt.clear_figure()
 
 
-def run_legend(run_order, run_colors, width: int) -> str:
-    """A single colored line mapping each run to its (stable) color."""
-    parts = []
-    budget = max(10, width // max(1, len(run_order)) - 4)
+def run_legend_lines(run_order, run_colors, width: int) -> List[str]:
+    """Map each run to its (stable) color, with **full names** — flowing onto as
+    many lines as needed (no truncation)."""
+    lines: List[str] = []
+    cur, cur_w = "", 0
     for name in run_order:
         code = _RUN_STYLES[run_colors.get(name, 0) % len(_RUN_STYLES)][1]
-        label = name if len(name) <= budget else "…" + name[-(budget - 1):]
-        parts.append(f"\033[{code}m──\033[0m {label}")
-    return "  " + "   ".join(parts)
+        seg = f"\033[{code}m──\033[0m {name}"
+        seg_w = 3 + len(name)          # "── " + name
+        sep_w = 3 if cur else 2        # gap between entries / left margin
+        if cur and cur_w + sep_w + seg_w > width:
+            lines.append(("  " + cur))
+            cur, cur_w = seg, seg_w
+        else:
+            cur = (cur + "   " + seg) if cur else seg
+            cur_w += sep_w + seg_w
+    if cur:
+        lines.append("  " + cur)
+    return lines or [""]
 
 
 # --- block / tiling helpers (ANSI-aware) ------------------------------------
@@ -167,26 +236,44 @@ def _pairs(runs, order, tag):
 
 # --- panel widgets ----------------------------------------------------------
 
+def _xs(s, xaxis):
+    """X values for a scalar series: by step, or relative wall-time (seconds)."""
+    if xaxis == "time" and getattr(s, "wall_times", None):
+        t0 = s.wall_times[0]
+        return [wt - t0 for wt in s.wall_times]
+    return s.steps
+
+
 def _scalar_block(tag, pairs, run_color, w, h, smooth, marker, theme,
-                  max_points, cursor=None) -> List[str]:
+                  max_points, cursor=None, xaxis="step", logy=False,
+                  title_rows=1) -> List[str]:
     import plotext as plt
 
+    h = max(2, h)
+    tblock = _title_block(tag, w, title_rows)     # our own (wrapped) full-path title
+    plot_h = max(1, h - len(tblock))
     _reset_plotext(plt)
-    plt.plotsize(w, h)
+    plt.plotsize(w, plot_h)
     plt.theme(theme)
     vmin = vmax = None
     for run_name, s in pairs:
         if not len(s):
             continue
-        xs, ys = subsample(s.steps, ema(s.values, smooth), max_points)
+        xs, ys = subsample(_xs(s, xaxis), ema(s.values, smooth), max_points)
         color = _PALETTE[run_color.get(run_name, 0) % len(_PALETTE)]
         plt.plot(xs, ys, marker=marker, color=color)   # draw order = z-order
         if ys:
             lo, hi = min(ys), max(ys)
             vmin = lo if vmin is None else min(vmin, lo)
             vmax = hi if vmax is None else max(vmax, hi)
+    do_log = logy and vmin is not None and vmin > 0   # log needs positive values
+    if do_log:
+        try:
+            plt.yscale("log")
+        except Exception:
+            do_log = False
     # A flat series gives plotext a zero-height axis whose tick search can hang.
-    if vmin is not None and (vmax - vmin) <= abs(vmin) * 1e-9 + 1e-12:
+    if not do_log and vmin is not None and (vmax - vmin) <= abs(vmin) * 1e-9 + 1e-12:
         pad = abs(vmin) * 0.5 or 1.0
         plt.ylim(vmin - pad, vmax + pad)
     if cursor is not None:
@@ -194,12 +281,12 @@ def _scalar_block(tag, pairs, run_color, w, h, smooth, marker, theme,
             plt.vertical_line(cursor, color="white")
         except Exception:
             pass
-    plt.title(shorten_tag(tag, max(6, w - 9)))
-    return _to_block(plt.build(), w, h)
+    # Title rendered by us (not plotext) so the full path is never dropped.
+    return tblock + _to_block(plt.build(), w, plot_h)
 
 
-def _text_block(tag, pairs, run_color, w, h, multi_run) -> List[str]:
-    lines = [_fit("\033[1m" + shorten_tag(tag, w) + "\033[0m", w)]
+def _text_block(tag, pairs, run_color, w, h, multi_run, title_rows=1) -> List[str]:
+    lines = list(_title_block(tag, w, title_rows))
     body: List[str] = []
     for run_name, s in pairs:
         if not len(s):
@@ -214,7 +301,7 @@ def _text_block(tag, pairs, run_color, w, h, multi_run) -> List[str]:
             body.append("")
     if not body:
         body = ["(no text)"]
-    for line in body[:h - 1]:
+    for line in body[:h - len(lines)]:
         lines.append(_fit(line, w))
     while len(lines) < h:
         lines.append(" " * w)
@@ -246,7 +333,7 @@ def _rebin(edges, counts, lo, hi, bins) -> List[float]:
     return out
 
 
-def _histogram_block(tag, pairs, run_color, w, h, multi_run) -> List[str]:
+def _histogram_block(tag, pairs, run_color, w, h, multi_run, title_rows=1) -> List[str]:
     chosen = None
     for run_name, s in pairs:        # last with data = the one "on top"
         if len(s):
@@ -254,10 +341,7 @@ def _histogram_block(tag, pairs, run_color, w, h, multi_run) -> List[str]:
     if chosen is None:
         return _empty_block(w, h)
     run_name, s = chosen
-    title_txt = shorten_tag(tag, w)
-    if multi_run:
-        title_txt = f"{shorten_tag(tag, max(6, w - 14))} [{shorten_tag(run_name, 10)}]"
-    lines = [_fit("\033[1m" + title_txt + "\033[0m", w)]
+    lines = list(_title_block(tag, w, title_rows))   # color identifies the run
 
     all_edges = [e for (edges, _c) in s.buckets for e in edges]
     if not all_edges:
@@ -265,7 +349,7 @@ def _histogram_block(tag, pairs, run_color, w, h, multi_run) -> List[str]:
     lo, hi = min(all_edges), max(all_edges)
     if hi <= lo:
         hi = lo + 1.0
-    plot_h = max(2, h - 2)
+    plot_h = max(2, h - len(lines) - 1)     # title rows + 1 x-axis line
     ylab_w = 8
     plot_w = max(4, w - ylab_w - 1)
 
@@ -330,7 +414,8 @@ class TextRenderer(Renderer):
         self.max_points = max_points
 
     def frame(self, runs, tags, *, smooth=0.0, max_cols=3, width=0, height=0,
-              run_colors=None, run_order=None, focus=-1) -> str:
+              run_colors=None, run_order=None, focus=-1, xaxis="step",
+              logy=False) -> str:
         if not tags:
             return _EMPTY_MSG
         if not width or not height:
@@ -342,12 +427,23 @@ class TextRenderer(Renderer):
         run_color = run_colors or {n: i for i, n in enumerate(sorted(runs))}
         order = [n for n in (run_order or sorted(runs)) if n in runs]
         multi_run = len(runs) > 1
-        legend_rows = 1 if multi_run else 0
+        # Full run names, wrapped over as many lines as needed (capped so the
+        # legend can't swallow the whole screen).
+        legend_lines = (run_legend_lines(sorted(runs), run_color, width)
+                        if multi_run else [])
+        legend_lines = legend_lines[:max(1, height // 3)] if legend_lines else []
+        legend_rows = len(legend_lines)
 
         rows, cols = grid_dims(len(tags), max_cols)
         gutter = 1
         panel_w = max(16, (width - (cols - 1) * gutter) // cols)
         panel_h = max(4, (height - legend_rows) // rows)
+        # Uniform title height across the page (so rows stay aligned): as many
+        # lines as the longest visible tag needs, capped at 3 and never eating
+        # more than (panel_h - 2) so the plot keeps at least two rows.
+        title_rows = max(1, min(3, panel_h - 2,
+                                max((title_lines_needed(t, panel_w) for t in tags),
+                                    default=1)))
 
         blocks: List[List[str]] = []
         for idx in range(rows * cols):
@@ -359,26 +455,29 @@ class TextRenderer(Renderer):
             kind = pairs[0][1].kind if pairs else "scalar"
             if kind == "text":
                 block = _text_block(tag, pairs, run_color, panel_w,
-                                    panel_h, multi_run)
+                                    panel_h, multi_run, title_rows=title_rows)
             elif kind == "histogram":
                 block = _histogram_block(tag, pairs, run_color, panel_w,
-                                         panel_h, multi_run)
+                                         panel_h, multi_run, title_rows=title_rows)
             else:
                 block = _scalar_block(tag, pairs, run_color, panel_w,
-                                      panel_h, smooth, self.marker,
-                                      self.theme, self.max_points)
+                                      panel_h, smooth, self.marker, self.theme,
+                                      self.max_points, xaxis=xaxis, logy=logy,
+                                      title_rows=title_rows)
             if idx == focus:
                 block = _highlight_block(block)
             blocks.append(block)
         body = _tile(blocks, rows, cols, panel_h, gutter)
-        if multi_run:
-            return run_legend(sorted(runs), run_color, width) + "\n" + body
+        if legend_lines:
+            return "\n".join(legend_lines) + "\n" + body
         return body
 
     def detail_scalar(self, runs, tag, *, order, run_color, w, h, smooth,
-                      cursor_step) -> str:
-        """Full-screen scalar plot with a vertical cursor at ``cursor_step``."""
+                      cursor_x, xaxis="step", logy=False) -> str:
+        """Full-screen scalar plot with a vertical cursor at ``cursor_x`` (in the
+        active x-axis domain)."""
         pairs = _pairs(runs, order, tag)
         block = _scalar_block(tag, pairs, run_color, w, h, smooth, self.marker,
-                              self.theme, self.max_points, cursor=cursor_step)
+                              self.theme, self.max_points, cursor=cursor_x,
+                              xaxis=xaxis, logy=logy, title_rows=0)
         return "\n".join(block)

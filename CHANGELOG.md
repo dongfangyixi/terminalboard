@@ -1,5 +1,41 @@
 # Changelog
 
+## Unreleased
+
+## 0.3.0 — 2026-06-08
+
+### Added
+- **Log-Y** (`l`) and **x-axis step↔time** (`x`) toggles for scalar panels.
+- **Config diff** in the text detail view (`d`): show only the config keys that
+  differ across experiments.
+- **CSV export** (`w`): write the focused scalar tag to `<tag>.csv`.
+- **Config file** (`~/.config/terminalboard.toml` / `$TERMINALBOARD_CONFIG`) for
+  defaults (smooth, grid, interval, tags, experiments, xaxis, logy, tb).
+- Bundled **demo generator** (`examples/gen_demo_logs.py`) and a **GIF recording
+  script** (`scripts/record_demo.sh`); `uvx`/`pipx run` note in the README.
+
+### Added
+- **Per-logdir view persistence**: filters, zoom, smoothing, x-axis, log-Y,
+  curve order and focus are saved on exit (under `$XDG_STATE_HOME` /
+  `~/.local/state/terminalboard/`) and restored when you reopen the same logdir.
+  Explicit CLI flags still win; `--reset-view` ignores the saved state (and
+  `restore = false` in the config disables persistence).
+
+### Fixed
+- **Scalar detail cursor** now ranges over the **union of all visible runs'
+  steps**, so `←/→`/`End` can reach the last point among *all* experiments —
+  previously it stopped at one run's final step even when others had data
+  further right. It also **starts in the middle** of the range (so it's clear it
+  can move both ways) instead of parked at the far right.
+
+### Changed
+- **Legend** now shows **full experiment names**, wrapping over multiple lines
+  instead of truncating with `…` — so names are readable when filtering.
+- **Panel titles** show the **full tag path**, wrapping over up to 3 lines (with
+  a uniform, row-aligned height across the page); when still too long the last
+  line keeps the leaf via leading ellipsis. Scalar titles are drawn by us, so a
+  wide title is never dropped by plotext.
+
 ## 0.2.1
 
 ### Fixed / changed

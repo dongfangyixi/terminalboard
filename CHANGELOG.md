@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.0 — 2026-06-08
+
 ### Added
 - **Log-Y** (`l`) and **x-axis step↔time** (`x`) toggles for scalar panels.
 - **Config diff** in the text detail view (`d`): show only the config keys that

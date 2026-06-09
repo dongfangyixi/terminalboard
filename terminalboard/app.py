@@ -5,6 +5,7 @@ import bisect
 import fnmatch
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -514,26 +515,34 @@ class App:
             for t, s in r.series.items():
                 by_kind.setdefault(s.kind, set()).add(t)
         tags_by_kind = {k: sorted(v)[:60] for k, v in by_kind.items()}
-        # Per scalar tag: last/min/max across runs (capped for prompt size).
+        # Per scalar tag: last/min/max + trend + non-finite flag across runs.
         scalars: dict = {}
         for t in sorted(by_kind.get("scalar", []))[:40]:
             per = {}
             for n, r in list(runs.items())[:12]:
                 s = r.series.get(t)
                 if s is not None and getattr(s, "values", None):
-                    per[n] = {"last": round(s.values[-1], 6),
-                              "min": round(min(s.values), 6),
-                              "max": round(max(s.values), 6),
-                              "steps": len(s.values)}
+                    vals = s.values
+                    delta = vals[-1] - vals[0]
+                    trend = ("down" if delta < -1e-12 else
+                             "up" if delta > 1e-12 else "flat")
+                    per[n] = {"last": round(vals[-1], 6),
+                              "min": round(min(vals), 6),
+                              "max": round(max(vals), 6),
+                              "steps": len(vals), "trend": trend}
+                    if not all(math.isfinite(v) for v in vals):
+                        per[n]["nonfinite"] = True
             if per:
                 scalars[t] = per
         hps, metrics = self._hparams_columns()
         ctx = {
             "state": {
                 "tag_filter": self.tag_filter, "experiment_filter": self.run_filter,
-                "type": self._kind_filter or "all", "page": None,
+                "type": self._kind_filter or "all",
                 "smoothing": self.smooth, "xaxis": self.xaxis, "logy": self.logy,
                 "distribution": self._distmode,
+                "focused_tag": self._current_tag(),
+                "open_detail": self._detail, "hparams_open": self._hparams,
             },
             "experiments": sorted(runs)[:24],
             "tags_by_kind": tags_by_kind,
@@ -615,10 +624,13 @@ class App:
             desc = self._llm_apply_action(nm, ar)
             if desc:
                 applied.append(desc)
-        # Remember the turn for follow-ups (Phase 2 uses the assistant text).
+        # Remember the turn for follow-ups — include what was done so a later
+        # "now zoom into that" / "compare to baseline" has the thread of actions.
+        note = result["text"] or ""
+        if applied:
+            note = (note + "\n" if note else "") + "[did: " + "; ".join(applied) + "]"
         self._llm_history.append({"role": "user", "content": question})
-        self._llm_history.append({"role": "assistant",
-                                  "content": result["text"] or "(navigated)"})
+        self._llm_history.append({"role": "assistant", "content": note or "(ok)"})
         self._llm_history = self._llm_history[-8:]
         return result["text"], applied, result.get("usage")
 
@@ -1255,6 +1267,9 @@ class App:
         if tok == "w":
             self._do_csv(screen, keys)
             return None
+        if tok == "a":                                  # ask about the open tag
+            self._handle_ask(screen, keys)
+            return None
         names = self._detail_runs()
         if not names:
             return None
@@ -1531,8 +1546,12 @@ class App:
             bits.append(us)
         self._status = "🤖 " + ("  ".join(bits) if bits else "done")
         if text:
-            self._show_text_overlay(screen, keys, "🤖 " + question,
-                                    self._wrap_overlay(text))
+            lines = []
+            if applied:
+                lines.append("\033[2m↳ " + " · ".join(applied) + "\033[0m")
+                lines.append("")
+            lines += self._wrap_overlay(text)
+            self._show_text_overlay(screen, keys, "🤖 " + question, lines)
 
     def _wrap_overlay(self, text: str) -> List[str]:
         cols, _ = shutil.get_terminal_size((100, 30))

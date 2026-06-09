@@ -443,9 +443,10 @@ def test_llm_run_navigates_and_records_history(logdir):
     assert a.tag_filter == "train/acc"
     assert any("train/acc" in x for x in applied)
     assert "rising" in text
-    assert a._llm_history[-2:] == [
-        {"role": "user", "content": "show accuracy"},
-        {"role": "assistant", "content": "train/acc is rising."}]
+    assert a._llm_history[-2] == {"role": "user", "content": "show accuracy"}
+    assistant = a._llm_history[-1]
+    assert assistant["role"] == "assistant"
+    assert "rising" in assistant["content"] and "[did:" in assistant["content"]
 
 
 def test_llm_context_is_json(logdir):
@@ -454,6 +455,34 @@ def test_llm_context_is_json(logdir):
     ctx = json.loads(a._llm_context())
     assert "train/loss" in ctx["scalars"]
     assert ctx["tags_by_kind"]["scalar"]
+    # Phase 2: trend + focus context
+    assert ctx["scalars"]["train/loss"]["run_a"]["trend"] == "down"
+    assert ctx["scalars"]["train/acc"]["run_a"]["trend"] == "up"
+    assert "focused_tag" in ctx["state"]
+
+
+def test_llm_followup_memory(logdir):
+    from terminalboard import llm
+    a = App(make_reader(str(logdir)), TextRenderer())
+    a.reader.poll()
+    a._llm_config = llm.LLMConfig("m")
+    seen = {}
+
+    def complete(**kw):
+        seen["messages"] = kw["messages"]
+        return {"choices": [{"message": {"content": "ok", "tool_calls": [
+            {"function": {"name": "set_zoom", "arguments": json.dumps({"panels": 4})}}]}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1}}
+
+    a._llm_complete = complete
+    a._llm_run("zoom to four")
+    # assistant turn records the action taken
+    assert "[did:" in a._llm_history[-1]["content"]
+    a._llm_run("now show losses")
+    # the 2nd call's messages carry the 1st turn (follow-up memory)
+    contents = [m.get("content", "") for m in seen["messages"]]
+    assert any("zoom to four" in c for c in contents)
+    assert any("[did:" in c for c in contents)
 
 
 def test_llm_config_roundtrip(tmp_path, monkeypatch):

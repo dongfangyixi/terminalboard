@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Added
+- **Distributions view** (`b`): toggle histogram panels between the heatmap and
+  percentile bands (0/25/50/75/100 over steps; median highlighted) — the same
+  data TensorBoard shows under "Distributions". Works in the grid and detail.
+- **PR curves**: the `pr_curves` plugin (precision-vs-recall) is parsed and drawn
+  as a curve; the detail view steps through training with `←/→`.
+- **HParams table** (`P`): a full-screen, scrollable table of runs × hyper-
+  parameters × final metric values, parsed from the `hparams` plugin.
+- **Type selector** (`c`): cycle the grid between all types / scalars /
+  histograms / text / pr-curves — a quick filter by data type.
+- The bundled demo (`examples/gen_demo_logs.py`) now also emits a PR curve and
+  HParams so all five types are visible out of the box.
+
 ## 0.3.0 — 2026-06-08
 
 ### Added

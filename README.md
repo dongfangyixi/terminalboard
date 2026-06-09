@@ -7,7 +7,7 @@
 
 A **pure-terminal TensorBoard viewer**.
 
-Watch your **live-updating scalar curves, text summaries, and histogram heatmaps
+Watch your **live-updating scalar curves, text summaries, histogram heatmaps
 right inside any terminal** — locally, or SSH'd into a remote training box —
 drawn as crisp Unicode/braille. No browser, no X11, no port forwarding.
 
@@ -135,8 +135,11 @@ A page can mix any of these — the panel adapts to each tag's kind:
 
 - **Scalars** — line/braille curves (multiple experiments overlaid).
 - **Text** summaries — the latest text shown in a panel.
-- **Histograms** — drawn as a **heatmap** of the distribution over steps
-  (value bins × steps, shaded by density).
+- **Histograms** — a **heatmap** of the distribution over steps (value bins ×
+  steps, shaded by density), or **distribution bands** (percentiles over steps)
+  with `b`.
+- **PR curves** — precision-vs-recall curves (`pr_curves` plugin).
+- **HParams** — a full-screen runs × hyperparameters × metrics **table** (`P`).
 
 ### Interactive controls (live mode)
 
@@ -146,11 +149,14 @@ A page can mix any of these — the panel adapts to each tag's kind:
 | `Enter` | **inspect** the focused panel full-screen |
 | `n` / `space`, `p` | next / previous page of tags |
 | `t` / `f` | edit the **tag** / **experiment** filter live |
+| `c` | **type selector** — cycle all / scalars / histograms / text / pr-curves |
 | `o` | cycle which overlapping curve is drawn on top (z-order) |
 | `z` / `Z` | zoom out / in — panels per page: `1·2·4·6·9·12·16·24·36` |
+| `b` | histograms ↔ **distribution** bands |
 | `+` / `-` / `0` | more / less / no smoothing |
 | `x` / `l` | x-axis step↔time / toggle log-Y (scalars) |
 | `w` | export the focused scalar tag to a CSV |
+| `P` | **HParams** table (runs × hyperparams × metrics) |
 | `r` | refresh now |
 | `H` / `?` | full help overlay |
 | `q` / `Esc` | quit |
@@ -160,7 +166,9 @@ the grid. By type:
 - **scalars** overlay all experiments, with a **cursor** — `←/→` move it one data
   point (`Shift+←/→` fast), and a per-experiment **value / smoothed / step /
   wall-time** readout updates beneath the plot. `x`/`l` change axis/scale.
-- **histograms** show one experiment as a heatmap (`←/→` switches).
+- **histograms** show one experiment as a heatmap (`←/→` switches; `b` toggles
+  the distribution-bands view).
+- **pr-curves** overlay all experiments; `←/→` steps through training.
 - **text** is scrollable (`↑/↓`, `PgUp/PgDn`, `Home/End`), `←/→` switch
   experiment, and **`d`** shows a **config diff** — only the keys that differ
   across experiments.

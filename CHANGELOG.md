@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+- **LLM assistant** (`a`) — *optional*, `pip install 'terminalboard[llm]'`.
+  Ask in natural language; the model both **navigates** the dashboard (filter
+  tags/experiments, pick a type, smooth, zoom, open a tag, open HParams, …) and
+  **analyzes** your results, in one turn. Powered by **LiteLLM**, so any provider
+  works (OpenAI / Anthropic / Gemini / OpenRouter / local Ollama / …) — you pick
+  the model string + key in a first-run setup form (`A` to reconfigure). Actions
+  are a typed whitelist (no shell). ⚠️ queries send tag names + metric summaries
+  to your chosen provider; use a local model (Ollama) to keep everything on-box.
+
 ## 0.4.0 — 2026-06-09
 
 ### Added

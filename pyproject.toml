@@ -36,6 +36,8 @@ dependencies = [
 [project.optional-dependencies]
 # Alternate parser backend (--tb, tensorboard's EventAccumulator).
 tb = ["tensorboard>=2.9"]
+# LLM assistant (the `a` key): natural-language navigation + analysis via LiteLLM.
+llm = ["litellm>=1.0"]
 # Development / testing.
 dev = ["pytest>=7", "build", "twine"]
 

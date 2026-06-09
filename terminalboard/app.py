@@ -9,8 +9,11 @@ import os
 import re
 import shutil
 import textwrap
+import threading
 import time
 from typing import List, Optional
+
+from . import llm as _llm
 
 from .keys import KeyReader
 from .reader import BaseReader
@@ -163,6 +166,10 @@ class App:
         self._kind_filter = None  # type selector: None=all, else a single kind (c)
         self._hparams = False   # full-screen HParams table mode (P)
         self._hparams_total = 0  # row count (for scroll clamping)
+        # LLM assistant (optional): config is loaded lazily on first use.
+        self._llm_config = None
+        self._llm_complete = None   # test hook: inject a fake completion callable
+        self._llm_history = []      # prior (user/assistant) turns for follow-ups
         # Start at the ladder rung closest to the requested grid's panel count.
         target = max(1, rows) * max(1, cols)
         self._zoom = min(
@@ -317,7 +324,7 @@ class App:
         return (
             "\033[2m[arrows]focus [Enter]inspect [n/p]page [f/t]ilter "
             f"[c]type [z/Z]zoom({per_page}) [o]rder [b]dist [+/-/0]smooth "
-            "[x]axis [l]og [w]csv [P]hparams [H]elp [q/Esc]uit\033[0m"
+            "[x]axis [l]og [w]csv [P]hparams [a]sk🤖 [H]elp [q/Esc]uit\033[0m"
         )
 
     def _prompt_footer(self, label: str, text: str, pos: int, kind: str,
@@ -485,6 +492,135 @@ class App:
                                     scroll=self._scroll)
         self._hparams_total = total
         return self._crop(f"{header}\n{body}\n{footer}", rows)
+
+    # -- LLM assistant: context + action executor ---------------------------
+
+    def _zoom_to(self, panels) -> None:
+        try:
+            target = max(1, int(panels))
+        except (TypeError, ValueError):
+            return
+        self._zoom = min(range(len(_ZOOM_LADDER)),
+                         key=lambda i: abs(_ZOOM_LADDER[i][0] * _ZOOM_LADDER[i][1]
+                                           - target))
+        self.rows, self.cols = _ZOOM_LADDER[self._zoom]
+
+    def _llm_context(self) -> str:
+        """A compact JSON summary of what's on screen — fed to the model so it can
+        craft precise filters and grounded analysis."""
+        runs = self._visible_runs()
+        by_kind: dict = {}
+        for r in runs.values():
+            for t, s in r.series.items():
+                by_kind.setdefault(s.kind, set()).add(t)
+        tags_by_kind = {k: sorted(v)[:60] for k, v in by_kind.items()}
+        # Per scalar tag: last/min/max across runs (capped for prompt size).
+        scalars: dict = {}
+        for t in sorted(by_kind.get("scalar", []))[:40]:
+            per = {}
+            for n, r in list(runs.items())[:12]:
+                s = r.series.get(t)
+                if s is not None and getattr(s, "values", None):
+                    per[n] = {"last": round(s.values[-1], 6),
+                              "min": round(min(s.values), 6),
+                              "max": round(max(s.values), 6),
+                              "steps": len(s.values)}
+            if per:
+                scalars[t] = per
+        hps, metrics = self._hparams_columns()
+        ctx = {
+            "state": {
+                "tag_filter": self.tag_filter, "experiment_filter": self.run_filter,
+                "type": self._kind_filter or "all", "page": None,
+                "smoothing": self.smooth, "xaxis": self.xaxis, "logy": self.logy,
+                "distribution": self._distmode,
+            },
+            "experiments": sorted(runs)[:24],
+            "tags_by_kind": tags_by_kind,
+            "scalars": scalars,
+            "hparams": {"columns": hps, "metrics": metrics,
+                        "rows": self._hparams_rows(hps, metrics)[:24]} if hps else {},
+        }
+        return json.dumps(ctx, default=str)
+
+    def _llm_apply_action(self, name: str, args: dict) -> Optional[str]:
+        """Apply one validated tool call; return a short human description."""
+        a = args or {}
+        if name == "set_tag_filter":
+            self.tag_filter = (a.get("pattern") or None)
+            self._focus = 0
+            return f"tags={self.tag_filter or '*'}"
+        if name == "set_experiment_filter":
+            self.run_filter = (a.get("pattern") or None)
+            self._focus = 0
+            return f"experiments={self.run_filter or '*'}"
+        if name == "set_type":
+            k = a.get("kind")
+            self._kind_filter = None if k in (None, "all") else k
+            self._focus = 0
+            return f"type={_KIND_LABEL.get(self._kind_filter, 'all')}"
+        if name == "set_smoothing":
+            try:
+                self.smooth = max(0.0, min(0.99, float(a.get("value"))))
+            except (TypeError, ValueError):
+                return None
+            return f"smooth={self.smooth:.2f}"
+        if name == "set_zoom":
+            self._zoom_to(a.get("panels"))
+            return f"zoom={self.rows * self.cols} panels"
+        if name == "set_xaxis":
+            self.xaxis = "time" if a.get("axis") == "time" else "step"
+            return f"x={self.xaxis}"
+        if name == "set_logy":
+            self.logy = bool(a.get("on"))
+            return f"logy={'on' if self.logy else 'off'}"
+        if name == "set_distribution":
+            self._distmode = bool(a.get("on"))
+            return f"dist={'on' if self._distmode else 'off'}"
+        if name == "open_detail":
+            tag = a.get("tag")
+            if tag and tag in self._matching_tags():
+                self._detail = tag
+                self._detail_run = 0
+                self._scroll = 0
+                track = self._scalar_track(tag, self._detail_runs())
+                self._cursor = max(0, (len(track) - 1) // 2)
+                return f"open {tag}"
+            return None
+        if name == "close_detail":
+            self._detail = None
+            return "close detail"
+        if name == "open_hparams":
+            self._hparams = True
+            self._scroll = 0
+            return "open hparams"
+        if name == "goto_page":
+            try:
+                p = max(1, int(a.get("page")))
+            except (TypeError, ValueError):
+                return None
+            self._focus = (p - 1) * max(1, self.rows * self.cols)
+            return f"page {p}"
+        return None
+
+    def _llm_run(self, question: str):
+        """Build messages, call the model, apply actions. Returns (text, applied,
+        usage) or raises. Pure orchestration — UI lives in _handle_ask."""
+        cfg = self._llm_config
+        result = _llm.ask(cfg, _llm.build_messages(self._llm_context(), question,
+                                                   self._llm_history),
+                          _llm.build_tools(), complete=self._llm_complete)
+        applied = []
+        for nm, ar in result["tool_calls"]:
+            desc = self._llm_apply_action(nm, ar)
+            if desc:
+                applied.append(desc)
+        # Remember the turn for follow-ups (Phase 2 uses the assistant text).
+        self._llm_history.append({"role": "user", "content": question})
+        self._llm_history.append({"role": "assistant",
+                                  "content": result["text"] or "(navigated)"})
+        self._llm_history = self._llm_history[-8:]
+        return result["text"], applied, result.get("usage")
 
     @staticmethod
     def _crop(frame: str, rows: int) -> str:
@@ -1039,6 +1175,14 @@ class App:
         elif tok == "P":                                # HParams table mode
             self._hparams = True
             self._scroll = 0
+        elif tok == "a":                                # ask the LLM assistant
+            self._handle_ask(screen, keys)
+        elif tok == "A":                                # re-open LLM setup
+            if _llm.is_available():
+                self._llm_config = self._llm_config or _llm.load_config()
+                self._llm_setup(screen, keys)
+            else:
+                self._status = "LLM assistant needs:  pip install 'terminalboard[llm]'"
         elif tok in ("q", "Q", "\x03", "\x04", "ESC"):
             return True
         elif tok in ("\r", "\n"):                       # inspect focused panel
@@ -1228,6 +1372,8 @@ class App:
             row("l", "toggle log-scale Y"),
             row("w", "export focused scalar to CSV"),
             row("P", "HParams table (runs × hyperparams × metrics)"),
+            row("a", "ask the LLM (navigate + analyze in words)"),
+            row("A", "set up / change the LLM model & key"),
             row("r", "refresh now"),
             row("q / Esc", "quit"),
         ]
@@ -1332,3 +1478,196 @@ class App:
                 scroll = max(0, min(scroll, maxscroll))
             if done:
                 return
+
+    # -- LLM assistant: input / setup form / result overlay -----------------
+
+    def _handle_ask(self, screen, keys) -> None:
+        """`a`: ask the LLM in natural language. Runs setup on first use."""
+        self._status = ""
+        if not _llm.is_available():
+            self._status = "LLM assistant needs:  pip install 'terminalboard[llm]'"
+            return
+        if self._llm_config is None:
+            self._llm_config = _llm.load_config()
+        if self._llm_config is None or not self._llm_config.ok():
+            if not self._llm_setup(screen, keys):
+                return                                   # cancelled setup
+        question = self._input_prompt(screen, keys, "ask", "")
+        if not question:
+            return
+
+        out: dict = {}
+
+        def work():
+            try:
+                out["res"] = self._llm_run(question)
+            except Exception as e:                       # surfaced in an overlay
+                out["err"] = e
+
+        th = threading.Thread(target=work, daemon=True)
+        th.start()
+        frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+        i = 0
+        while th.is_alive():
+            self._status = (f"\033[36m{frames[i % len(frames)]}\033[0m thinking…  "
+                            "\033[2m(Esc cancel)\033[0m")
+            screen.draw(self._build_frame(), hard=False)
+            i += 1
+            chunk = keys.get(0.1)
+            if chunk and any(t == "ESC" for t in self._parse_chunk(chunk)):
+                self._status = "ask cancelled"
+                return                                   # thread is daemon; abandon
+        if "err" in out:
+            self._status = "LLM error"
+            self._show_text_overlay(screen, keys, "LLM error",
+                                    self._wrap_overlay(str(out["err"])))
+            return
+        text, applied, usage = out["res"]
+        bits = []
+        if applied:
+            bits.append("✓ " + " · ".join(applied))
+        us = _llm.usage_summary(usage)
+        if us:
+            bits.append(us)
+        self._status = "🤖 " + ("  ".join(bits) if bits else "done")
+        if text:
+            self._show_text_overlay(screen, keys, "🤖 " + question,
+                                    self._wrap_overlay(text))
+
+    def _wrap_overlay(self, text: str) -> List[str]:
+        cols, _ = shutil.get_terminal_size((100, 30))
+        w = max(20, cols - 2)
+        out: List[str] = []
+        for para in text.split("\n"):
+            out.extend(textwrap.wrap(para, w) or [""])
+        return out
+
+    def _show_text_overlay(self, screen, keys, title: str, lines: List[str]) -> None:
+        cols, rows = shutil.get_terminal_size((100, 30))
+        body = [f"\033[1m{title}\033[0m", ""] + lines
+        body_h = max(1, rows - 1)
+        maxscroll = max(0, len(body) - body_h)
+        scroll = 0
+        while True:
+            view = body[scroll:scroll + body_h]
+            view += [""] * (body_h - len(view))
+            foot = "\033[2m  ↑/↓ PgUp/PgDn scroll · any other key to close\033[0m"
+            screen.draw("\n".join(view + [foot]), hard=True)
+            chunk = keys.get(30)
+            if chunk is None:
+                continue
+            if not maxscroll:
+                return
+            done = False
+            for tok in self._parse_chunk(chunk):
+                if tok == "UP":
+                    scroll -= 1
+                elif tok == "DOWN":
+                    scroll += 1
+                elif tok == "PGUP":
+                    scroll -= body_h
+                elif tok == "PGDN":
+                    scroll += body_h
+                elif tok == "HOME":
+                    scroll = 0
+                elif tok == "END":
+                    scroll = maxscroll
+                else:
+                    done = True
+                    break
+                scroll = max(0, min(scroll, maxscroll))
+            if done:
+                return
+
+    def _llm_setup(self, screen, keys) -> bool:
+        """Modal form: Model / API key / API base. Validates with a ping, saves on
+        success. Returns True if configured."""
+        cur = self._llm_config or _llm.LLMConfig()
+        fields = [["Model", list(cur.model)],
+                  ["API key", list(cur.api_key)],
+                  ["API base (optional)", list(cur.api_base)]]
+        fi = 0
+        pos = len(fields[0][1])
+        error = ""
+        testing = False
+        while True:
+            screen.draw(self._llm_setup_frame(fields, fi, pos, error, testing),
+                        hard=True)
+            if testing:
+                cfg = _llm.LLMConfig("".join(fields[0][1]).strip(),
+                                     "".join(fields[1][1]).strip(),
+                                     "".join(fields[2][1]).strip())
+                ok, err = _llm.validate(cfg, complete=self._llm_complete)
+                testing = False
+                if ok:
+                    _llm.save_config(cfg)
+                    self._llm_config = cfg
+                    return True
+                error = (err or "validation failed")[:200]
+                continue
+            chunk = keys.get(30)
+            if chunk is None:
+                continue
+            for tok in self._parse_chunk(chunk):
+                buf = fields[fi][1]
+                if tok in ("\x03", "\x04", "ESC"):
+                    return False
+                if tok in ("\r", "\n"):
+                    if "".join(fields[0][1]).strip():
+                        testing, error = True, ""
+                    else:
+                        error = "model is required"
+                    break
+                if tok in ("DOWN", "\t"):
+                    fi = (fi + 1) % len(fields)
+                    pos = len(fields[fi][1])
+                elif tok == "UP":
+                    fi = (fi - 1) % len(fields)
+                    pos = len(fields[fi][1])
+                elif tok == "LEFT":
+                    pos = max(0, pos - 1)
+                elif tok == "RIGHT":
+                    pos = min(len(buf), pos + 1)
+                elif tok == "HOME":
+                    pos = 0
+                elif tok == "END":
+                    pos = len(buf)
+                elif tok in ("\x7f", "\b", "\x08"):
+                    if pos > 0:
+                        del buf[pos - 1]
+                        pos -= 1
+                elif tok == "DEL":
+                    if pos < len(buf):
+                        del buf[pos]
+                elif isinstance(tok, str) and tok.isprintable():
+                    for c in tok:
+                        buf.insert(pos, c)
+                        pos += 1
+
+    def _llm_setup_frame(self, fields, fi, pos, error, testing) -> str:
+        cols, rows = shutil.get_terminal_size((100, 30))
+        L = ["\033[1mterminalboard — set up the LLM assistant\033[0m", ""]
+        L.append("\033[2mA LiteLLM model string + its API key. Examples:\033[0m")
+        L.append("\033[2m  anthropic/claude-sonnet-4-6 · gpt-4o · "
+                 "gemini/gemini-2.0-flash · ollama/llama3\033[0m")
+        L.append("")
+        for idx, (label, buf) in enumerate(fields):
+            shown = ("•" * len(buf)) if idx == 1 else "".join(buf)
+            if idx == fi and not testing:
+                if pos < len(shown):
+                    cur = shown[:pos] + "\033[7m" + shown[pos] + "\033[0m" + shown[pos + 1:]
+                else:
+                    cur = shown + "\033[7m \033[0m"
+                L.append(f"\033[1;36m▶\033[0m {label:<22}{cur}")
+            else:
+                L.append(f"  {label:<22}{shown}")
+        L.append("")
+        L.append("\033[2m⚠ queries send your tag names + metric summaries to "
+                 "this provider\033[0m")
+        if testing:
+            L.append("\033[1;33mtesting…\033[0m")
+        elif error:
+            L.append(f"\033[1;31m{error}\033[0m")
+        L.append("")
+        L.append("\033[2mTab/↑↓ next field · Enter test & save · Esc cancel\033[0m")
+        return self._crop("\n".join(L), rows)

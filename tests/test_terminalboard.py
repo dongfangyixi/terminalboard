@@ -1,6 +1,7 @@
 """Smoke + unit tests. Run with: pytest -q"""
 from __future__ import annotations
 
+import json
 import math
 
 import pytest
@@ -376,6 +377,94 @@ def test_view_state_persists(logdir, tmp_path, monkeypatch):
             tag_filter="other", restore_exclude={"tag_filter"})
     assert c.tag_filter == "other"
     assert c.smooth == 0.85                       # still restored
+
+
+# -- LLM assistant -----------------------------------------------------------
+
+def _fake_completion(tool_calls=(), text="", usage=None):
+    """A fake litellm.completion: returns an OpenAI-style response (dict form)."""
+    def complete(**kwargs):
+        return {
+            "choices": [{"message": {
+                "content": text,
+                "tool_calls": [
+                    {"function": {"name": n, "arguments": json.dumps(a)}}
+                    for (n, a) in tool_calls],
+            }}],
+            "usage": usage or {"prompt_tokens": 10, "completion_tokens": 5},
+        }
+    return complete
+
+
+def test_llm_ask_parses_tool_calls():
+    from terminalboard import llm
+    cfg = llm.LLMConfig(model="x")
+    out = llm.ask(cfg, [{"role": "user", "content": "hi"}], llm.build_tools(),
+                  complete=_fake_completion(
+                      tool_calls=[("set_tag_filter", {"pattern": "val/*"}),
+                                  ("bogus_action", {})],
+                      text="done"))
+    assert out["text"] == "done"
+    # unknown actions are dropped; known ones kept
+    assert out["tool_calls"] == [("set_tag_filter", {"pattern": "val/*"})]
+
+
+def test_llm_apply_actions(logdir):
+    a = App(make_reader(str(logdir)), TextRenderer())
+    a.reader.poll()
+    assert a._llm_apply_action("set_tag_filter", {"pattern": "train/loss"})
+    assert a.tag_filter == "train/loss"
+    a._llm_apply_action("set_type", {"kind": "histogram"})
+    assert a._kind_filter == "histogram"
+    a._llm_apply_action("set_smoothing", {"value": 5})         # clamped
+    assert a.smooth == 0.99
+    a._llm_apply_action("set_distribution", {"on": True})
+    assert a._distmode is True
+    a._llm_apply_action("open_hparams", {})
+    assert a._hparams is True
+    a._llm_apply_action("set_tag_filter", {"pattern": None})
+    assert a.tag_filter is None
+    a._llm_apply_action("set_type", {"kind": "all"})           # clear kind filter
+    assert a._kind_filter is None
+    # open_detail only opens an existing (visible) tag
+    assert a._llm_apply_action("open_detail", {"tag": "no/such"}) is None
+    assert a._llm_apply_action("open_detail", {"tag": "train/loss"})
+    assert a._detail == "train/loss"
+
+
+def test_llm_run_navigates_and_records_history(logdir):
+    a = App(make_reader(str(logdir)), TextRenderer())
+    a.reader.poll()
+    a._llm_config = __import__("terminalboard.llm", fromlist=["x"]).LLMConfig("m")
+    a._llm_complete = _fake_completion(
+        tool_calls=[("set_tag_filter", {"pattern": "train/acc"})],
+        text="train/acc is rising.")
+    text, applied, usage = a._llm_run("show accuracy")
+    assert a.tag_filter == "train/acc"
+    assert any("train/acc" in x for x in applied)
+    assert "rising" in text
+    assert a._llm_history[-2:] == [
+        {"role": "user", "content": "show accuracy"},
+        {"role": "assistant", "content": "train/acc is rising."}]
+
+
+def test_llm_context_is_json(logdir):
+    a = App(make_reader(str(logdir)), TextRenderer())
+    a.reader.poll()
+    ctx = json.loads(a._llm_context())
+    assert "train/loss" in ctx["scalars"]
+    assert ctx["tags_by_kind"]["scalar"]
+
+
+def test_llm_config_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    from terminalboard import llm
+    assert llm.load_config() is None
+    llm.save_config(llm.LLMConfig(model="gpt-4o", api_key="sk-x", api_base=""))
+    got = llm.load_config()
+    assert got.model == "gpt-4o" and got.api_key == "sk-x"
+    import os
+    assert oct(os.stat(llm.config_path()).st_mode)[-3:] == "600"
 
 
 def test_config_load(tmp_path, monkeypatch):

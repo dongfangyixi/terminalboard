@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.0 — 2026-06-09
+
 ### Added
 - **Distributions view** (`b`): toggle histogram panels between the heatmap and
   percentile bands (0/25/50/75/100 over steps; median highlighted) — the same

@@ -10,7 +10,7 @@ distribution over steps).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 
 @dataclass
@@ -74,11 +74,37 @@ class HistogramSeries:
         self.wall_times.append(wall_time)
 
 
-Series = Union[ScalarSeries, TextSeries, HistogramSeries]
+@dataclass
+class PRCurveSeries:
+    """A precision-recall curve's history within one run.
+
+    Each entry is ``(precision, recall)``: equal-length arrays sampled across
+    classification thresholds, so a single step plots as one P-R curve.
+    """
+
+    kind = "pr_curve"
+    tag: str
+    steps: List[int] = field(default_factory=list)
+    precision: List[List[float]] = field(default_factory=list)
+    recall: List[List[float]] = field(default_factory=list)
+    wall_times: List[float] = field(default_factory=list)
+
+    def __len__(self) -> int:
+        return len(self.steps)
+
+    def append(self, step: int, precision, recall, wall_time: float = 0.0) -> None:
+        self.steps.append(step)
+        self.precision.append(list(precision))
+        self.recall.append(list(recall))
+        self.wall_times.append(wall_time)
+
+
+Series = Union[ScalarSeries, TextSeries, HistogramSeries, PRCurveSeries]
 _SERIES_BY_KIND = {
     "scalar": ScalarSeries,
     "text": TextSeries,
     "histogram": HistogramSeries,
+    "pr_curve": PRCurveSeries,
 }
 
 
@@ -89,6 +115,10 @@ class Run:
     name: str  # path relative to the logdir (or "." for the logdir itself)
     path: str  # absolute directory path
     series: Dict[str, Series] = field(default_factory=dict)
+    # HParams plugin: this run's hyperparameter values (name -> value), and the
+    # experiment definition (column order + metric tags) if it carried one.
+    hparams: Dict[str, object] = field(default_factory=dict)
+    hparam_info: Optional[Dict[str, list]] = None
 
     def tags(self) -> List[str]:
         return sorted(self.series.keys())

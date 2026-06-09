@@ -69,6 +69,39 @@ def histogram_value(tag, edges, counts):
     return _ld(1, tag.encode()) + _ld(5, hp)
 
 
+def _metadata(plugin, content=b""):
+    return _ld(1, _ld(1, plugin.encode()) + _ld(2, content))
+
+
+def pr_curve_value(tag, precision, recall):
+    n = len(precision)
+    rows = [0.0] * (4 * n) + list(precision) + list(recall)   # [6, N] DT_FLOAT
+    floats = struct.pack(f"<{len(rows)}f", *rows)
+    tensor = _key(1, 0) + _varint(1) + _key(5, 2) + _varint(len(floats)) + floats
+    return _ld(1, tag.encode()) + _ld(8, tensor) + _ld(9, _metadata("pr_curves"))
+
+
+def _struct_value(val):
+    if isinstance(val, bool):
+        return _key(4, 0) + _varint(1 if val else 0)
+    if isinstance(val, (int, float)):
+        return _key(2, 1) + struct.pack("<d", float(val))
+    return _ld(3, str(val).encode())
+
+
+def hparams_session(values):
+    entries = b"".join(_ld(1, _ld(1, k.encode()) + _ld(2, _struct_value(v)))
+                       for k, v in values.items())
+    meta = _metadata("hparams", _ld(3, entries))
+    return _ld(1, b"_hparams_/session_start_info") + _ld(9, meta)
+
+
+def hparams_experiment(hparam_names, metric_tags):
+    exp = b"".join(_ld(5, _ld(1, n.encode())) for n in hparam_names)
+    exp += b"".join(_ld(6, _ld(1, _ld(2, t.encode()))) for t in metric_tags)
+    return _ld(1, b"_hparams_/experiment") + _ld(9, _metadata("hparams", _ld(2, exp)))
+
+
 def _event(step, wall, values):
     e = _key(1, 1) + struct.pack("<d", wall) + _key(2, 0) + _varint(step)
     return e + _ld(5, b"".join(_ld(1, v) for v in values))
@@ -146,6 +179,11 @@ def make_records(name):
             vals.append(text_value(
                 "notes/run", f"# {name}\n\nLearning rate **{lr}**, "
                 f"dropout {config['dropout']}.\nStarted as a demo run."))
+            # HParams: this run's hyperparameters (+ the experiment definition).
+            vals.append(hparams_experiment(
+                ["lr", "dropout", "model"], ["val/accuracy", "val/loss"]))
+            vals.append(hparams_session(
+                {"lr": lr, "dropout": config["dropout"], "model": config["model"]}))
         records.append((s, vals))
 
     for s in HIST_STEPS:                                      # drifting histograms
@@ -156,9 +194,16 @@ def make_records(name):
         # gradients: shrinking spread as training converges
         g_counts = _gauss_hist(EDGES, mean=0.0, std=max(0.15, 1.5 * math.exp(-2 * t)),
                                total=1000)
+        # PR curve sharpening as accuracy improves (recall grid, precision falls
+        # off later as training progresses).
+        recall = [i / 10 for i in range(11)]
+        sharp = min(0.95, 0.55 + 0.8 * t)
+        precision = [min(1.0, sharp + (1 - sharp) * (1 - r) ** (1 + 6 * t))
+                     for r in recall]
         records.append((s, [
             histogram_value("weights/layer0", EDGES, w_counts),
             histogram_value("grad/layer0", EDGES, g_counts),
+            pr_curve_value("pr/classifier", precision, recall),
         ]))
     records.sort(key=lambda r: r[0])
     return records
@@ -174,7 +219,9 @@ def main():
     print("Scalars: train/loss, train/accuracy, val/loss, val/accuracy, "
           "train/lr, train/grad_norm, system/gpu_mem_gb (flat)")
     print("Text:    config/json, notes/run")
-    print("Hists:   weights/layer0, grad/layer0  (heatmaps)")
+    print("Hists:   weights/layer0, grad/layer0  (heatmaps; press b for bands)")
+    print("PR:      pr/classifier")
+    print("HParams: lr, dropout, model  (press P for the table)")
     print(f"\nView it:  terminalboard {out}")
 
 

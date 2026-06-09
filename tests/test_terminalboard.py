@@ -195,6 +195,84 @@ def test_scalar_detail_cursor(logdir):
     assert "cursor @ step" in frame and "value" in frame and "smoothed" in frame
 
 
+def _multi_type_logdir(tmp_path):
+    """Two runs with a scalar, histogram, pr-curve, and hparams."""
+    import conftest as C
+    for exp, (lr, dp) in {"baseline": (0.01, 0.1), "high_lr": (0.03, 0.0)}.items():
+        d = tmp_path / exp
+        d.mkdir()
+        recs = []
+        for s in range(0, 30, 10):
+            vals = [
+                C.scalar_value("loss", 2.0 ** (-s / 10)),
+                C.histogram_value("w/h", [-2., -1., 0., 1., 2.],
+                                  [1., 4., 9., 4., 1.]),
+                C.pr_curve_value("pr/cls", [1., .9, .7, .4], [0., .4, .7, 1.]),
+            ]
+            if s == 0:
+                vals.append(C.hparams_experiment(["lr", "dropout"], ["loss"]))
+                vals.append(C.hparams_session({"lr": lr, "dropout": dp, "opt": "adam"}))
+            recs.append((s, vals))
+        C.write_events(d / "events.out.tfevents.1.h.1.0", recs)
+    return tmp_path
+
+
+def test_parse_pr_curve_and_hparams(tmp_path):
+    runs = make_reader(str(_multi_type_logdir(tmp_path))).poll()
+    r = runs["baseline"]
+    pr = r.series["pr/cls"]
+    assert pr.kind == "pr_curve"
+    assert pr.precision[-1] == pytest.approx([1., .9, .7, .4], rel=1e-5)
+    assert pr.recall[-1] == pytest.approx([0., .4, .7, 1.], rel=1e-5)
+    assert "_hparams_/session_start_info" not in r.series   # folded, not a tag
+    assert r.hparams == {"lr": pytest.approx(0.01), "dropout": pytest.approx(0.1),
+                         "opt": "adam"}
+    assert r.hparam_info["hparams"] == ["lr", "dropout"]
+    assert r.hparam_info["metrics"] == ["loss"]
+
+
+def test_kind_filter_cycles(tmp_path):
+    a = App(make_reader(str(_multi_type_logdir(tmp_path))), TextRenderer())
+    a.reader.poll()
+    assert set(a._matching_tags()) == {"loss", "w/h", "pr/cls"}
+    a._handle_view_key("c")
+    assert a._kind_filter == "scalar" and a._matching_tags() == ["loss"]
+    a._handle_view_key("c")
+    assert a._kind_filter == "histogram" and a._matching_tags() == ["w/h"]
+    a._handle_view_key("c")
+    assert a._kind_filter == "text" and a._matching_tags() == []
+    a._handle_view_key("c")
+    assert a._kind_filter == "pr_curve" and a._matching_tags() == ["pr/cls"]
+    a._handle_view_key("c")
+    assert a._kind_filter is None
+
+
+def test_distribution_and_prcurve_render(tmp_path):
+    a = App(make_reader(str(_multi_type_logdir(tmp_path))), TextRenderer())
+    a.reader.poll()
+    a._distmode = True                          # histograms -> bands
+    assert a._build_frame().strip()
+    # pr-curve detail with cursor stepping
+    a.tag_filter = "pr/cls"
+    a._handle_grid_key(_FakeScreen(), None, "\r")
+    assert a._build_detail_frame().strip()
+    a._handle_detail_key(_FakeScreen(), None, "END")
+    track = a._scalar_track("pr/cls", a._detail_runs())
+    assert a._cursor == len(track) - 1
+
+
+def test_hparams_table_view(tmp_path):
+    a = App(make_reader(str(_multi_type_logdir(tmp_path))), TextRenderer())
+    a.reader.poll()
+    a._handle_grid_key(_FakeScreen(), None, "P")
+    assert a._hparams is True
+    frame = a._build_hparams_frame()
+    for token in ("lr", "dropout", "opt", "loss", "baseline", "high_lr"):
+        assert token in frame
+    a._handle_hparams_key(_FakeScreen(), None, "ESC")
+    assert a._hparams is False
+
+
 def test_scalar_cursor_track_is_union_of_runs(tmp_path):
     # two runs of different length: cursor must reach the longer run's last step
     import conftest as C

@@ -379,6 +379,132 @@ def _histogram_block(tag, pairs, run_color, w, h, multi_run, title_rows=1) -> Li
     return lines[:h]
 
 
+def _percentile(edges, counts, q: float) -> float:
+    """Value at cumulative fraction ``q`` of a bucketed distribution (edges are
+    right-hand limits), linearly interpolated within the spanning bucket."""
+    total = sum(counts)
+    if total <= 0 or not edges:
+        return edges[len(edges) // 2] if edges else 0.0
+    target = q * total
+    cum = 0.0
+    for i, c in enumerate(counts):
+        if cum + c >= target and c > 0:
+            left = edges[i - 1] if i > 0 else (
+                edges[0] - (edges[1] - edges[0] if len(edges) > 1 else 1.0))
+            return left + (edges[i] - left) * ((target - cum) / c)
+        cum += c
+    return edges[-1]
+
+
+def _distribution_block(tag, pairs, run_color, w, h, theme, max_points,
+                        title_rows=1) -> List[str]:
+    """Percentile bands (0/25/50/75/100) over steps — the 'distributions' view of
+    the same histogram data; median in white, the spread in the run's color."""
+    import plotext as plt
+    chosen = None
+    for run_name, s in pairs:        # last with data = on top
+        if len(s):
+            chosen = (run_name, s)
+    if chosen is None:
+        return _empty_block(w, h)
+    run_name, s = chosen
+    h = max(2, h)
+    tblock = _title_block(tag, w, title_rows)
+    plot_h = max(1, h - len(tblock))
+    steps = s.steps
+    band = {q: [_percentile(e, c, q) for (e, c) in s.buckets]
+            for q in (0.0, 0.25, 0.5, 0.75, 1.0)}
+    _reset_plotext(plt)
+    plt.plotsize(w, plot_h)
+    plt.theme(theme)
+    color = _PALETTE[run_color.get(run_name, 0) % len(_PALETTE)]
+    for q in (0.0, 0.25, 0.75, 1.0):
+        xs, ys = subsample(steps, band[q], max_points)
+        plt.plot(xs, ys, marker="braille", color=color)
+    xs, ys = subsample(steps, band[0.5], max_points)
+    plt.plot(xs, ys, marker="braille", color="white")          # median
+    return tblock + _to_block(plt.build(), w, plot_h)
+
+
+def _nearest_step_index(steps, step) -> int:
+    best_i, best_d = 0, None
+    for i, st in enumerate(steps):
+        d = abs(st - step)
+        if best_d is None or d < best_d:
+            best_i, best_d = i, d
+    return best_i
+
+
+def _prcurve_block(tag, pairs, run_color, w, h, theme, title_rows=1,
+                   step=None) -> List[str]:
+    """Precision (y) vs recall (x) curve(s) — one per run, at the latest step (or
+    ``step`` if given)."""
+    import plotext as plt
+    h = max(2, h)
+    tblock = _title_block(tag, w, title_rows)
+    plot_h = max(1, h - len(tblock))
+    _reset_plotext(plt)
+    plt.plotsize(w, plot_h)
+    plt.theme(theme)
+    drew = False
+    for run_name, s in pairs:
+        if not len(s):
+            continue
+        idx = (_nearest_step_index(s.steps, step) if step is not None
+               else len(s.steps) - 1)
+        pts = sorted(zip(s.recall[idx], s.precision[idx]))     # by recall asc
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        color = _PALETTE[run_color.get(run_name, 0) % len(_PALETTE)]
+        plt.plot(xs, ys, marker="braille", color=color)
+        drew = True
+    if not drew:
+        return _empty_block(w, h)
+    try:
+        plt.xlim(0, 1)
+        plt.ylim(0, 1)
+        plt.xlabel("recall")
+    except Exception:
+        pass
+    return tblock + _to_block(plt.build(), w, plot_h)
+
+
+def hparams_table(col_titles, data_rows, width, height, scroll=0):
+    """Render an hparams grid: bold header, rule, then one row per run (vertically
+    scrollable). Returns (text, total_rows)."""
+    ncol = len(col_titles)
+    widths = []
+    for c in range(ncol):
+        wmax = len(str(col_titles[c]))
+        for row in data_rows:
+            if c < len(row):
+                wmax = max(wmax, len(str(row[c])))
+        widths.append(max(3, min(wmax, 22)))
+
+    def fmt(cells, bold=False):
+        parts = []
+        for c in range(ncol):
+            cell = str(cells[c]) if c < len(cells) else ""
+            if len(cell) > widths[c]:
+                cell = cell[:widths[c] - 1] + "…"
+            parts.append(f"{cell:<{widths[c]}}")
+        line = "  ".join(parts)
+        if bold:
+            line = "\033[1m" + line + "\033[0m"
+        return _fit(line, width)
+
+    rule = _fit("─" * min(width, sum(widths) + 2 * max(0, ncol - 1)), width)
+    head = [fmt(col_titles, bold=True), rule]
+    body = [fmt(r) for r in data_rows]
+    total = len(body)
+    avail = max(1, height - len(head))
+    scroll = max(0, min(scroll, max(0, total - avail)))
+    lines = head + body[scroll:scroll + avail]
+    while len(lines) < height:
+        lines.append("")
+    return "\n".join(lines[:height]), total
+
+
 # --- renderers --------------------------------------------------------------
 
 class Renderer:
@@ -415,7 +541,7 @@ class TextRenderer(Renderer):
 
     def frame(self, runs, tags, *, smooth=0.0, max_cols=3, width=0, height=0,
               run_colors=None, run_order=None, focus=-1, xaxis="step",
-              logy=False) -> str:
+              logy=False, hist_mode="heatmap") -> str:
         if not tags:
             return _EMPTY_MSG
         if not width or not height:
@@ -457,8 +583,17 @@ class TextRenderer(Renderer):
                 block = _text_block(tag, pairs, run_color, panel_w,
                                     panel_h, multi_run, title_rows=title_rows)
             elif kind == "histogram":
-                block = _histogram_block(tag, pairs, run_color, panel_w,
-                                         panel_h, multi_run, title_rows=title_rows)
+                if hist_mode == "dist":
+                    block = _distribution_block(tag, pairs, run_color, panel_w,
+                                                panel_h, self.theme,
+                                                self.max_points, title_rows)
+                else:
+                    block = _histogram_block(tag, pairs, run_color, panel_w,
+                                             panel_h, multi_run,
+                                             title_rows=title_rows)
+            elif kind == "pr_curve":
+                block = _prcurve_block(tag, pairs, run_color, panel_w, panel_h,
+                                       self.theme, title_rows=title_rows)
             else:
                 block = _scalar_block(tag, pairs, run_color, panel_w,
                                       panel_h, smooth, self.marker, self.theme,
@@ -480,4 +615,11 @@ class TextRenderer(Renderer):
         block = _scalar_block(tag, pairs, run_color, w, h, smooth, self.marker,
                               self.theme, self.max_points, cursor=cursor_x,
                               xaxis=xaxis, logy=logy, title_rows=0)
+        return "\n".join(block)
+
+    def detail_prcurve(self, runs, tag, *, order, run_color, w, h, step) -> str:
+        """Full-screen P-R curve overlay (all runs) at ``step``."""
+        pairs = _pairs(runs, order, tag)
+        block = _prcurve_block(tag, pairs, run_color, w, h, self.theme,
+                               title_rows=0, step=step)
         return "\n".join(block)

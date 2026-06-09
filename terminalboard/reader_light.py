@@ -144,13 +144,80 @@ def _histo_proto(buf: bytes):
     return (edges, counts) if edges and counts else None
 
 
-def _plugin_name(meta_buf: bytes) -> Optional[str]:
-    """SummaryMetadata.plugin_data(1).plugin_name(1)."""
+def _plugin_data(meta_buf: bytes):
+    """SummaryMetadata.plugin_data(1) -> (plugin_name(1), content(2) bytes)."""
+    name = None
+    content = b""
     for f, wt, v in _iter_fields(meta_buf):
         if f == 1 and wt == 2:                       # plugin_data
             for pf, pwt, pv in _iter_fields(v):
                 if pf == 1 and pwt == 2:             # plugin_name
-                    return bytes(pv).decode("utf-8", "replace")
+                    name = bytes(pv).decode("utf-8", "replace")
+                elif pf == 2 and pwt == 2:           # content
+                    content = bytes(pv)
+    return name, content
+
+
+def _tensor_to_prcurve(buf: bytes):
+    """PR-curve tensor: shape [6, N] = tp/fp/tn/fn/precision/recall rows."""
+    vals = _tensor_doubles(buf)
+    if not vals or len(vals) % 6 != 0:
+        return None
+    n = len(vals) // 6
+    precision = vals[4 * n:5 * n]
+    recall = vals[5 * n:6 * n]
+    if not precision or not recall:
+        return None
+    return precision, recall
+
+
+# --- HParams plugin protos --------------------------------------------------
+
+def _struct_value(buf: bytes):
+    """google.protobuf.Value -> python scalar (number / string / bool / None)."""
+    for f, wt, v in _iter_fields(buf):
+        if f == 2 and wt == 1:                       # number_value (double)
+            return struct.unpack("<d", v)[0]
+        if f == 3 and wt == 2:                       # string_value
+            return bytes(v).decode("utf-8", "replace")
+        if f == 4 and wt == 0:                       # bool_value
+            return bool(v)
+    return None
+
+
+def _parse_hparams(content: bytes):
+    """HParamsPluginData content -> ('values', {name: val}) for a run's
+    session_start_info, or ('experiment', {hparams: [...], metrics: [...]}) for
+    the experiment definition, else None."""
+    for f, wt, v in _iter_fields(content):
+        if f == 3 and wt == 2:                       # session_start_info
+            values = {}
+            for sf, swt, sv in _iter_fields(v):
+                if sf == 1 and swt == 2:             # map<string, Value> entry
+                    key = val = None
+                    for ef, ewt, ev in _iter_fields(sv):
+                        if ef == 1 and ewt == 2:
+                            key = bytes(ev).decode("utf-8", "replace")
+                        elif ef == 2 and ewt == 2:
+                            val = _struct_value(ev)
+                    if key is not None:
+                        values[key] = val
+            return "values", values
+        if f == 2 and wt == 2:                       # experiment
+            hps, metrics = [], []
+            for ef, ewt, ev in _iter_fields(v):
+                if ef == 5 and ewt == 2:             # hparam_infos
+                    for hf, hwt, hv in _iter_fields(ev):
+                        if hf == 1 and hwt == 2:     # HParamInfo.name
+                            hps.append(bytes(hv).decode("utf-8", "replace"))
+                elif ef == 6 and ewt == 2:           # metric_infos
+                    for mf, mwt, mv in _iter_fields(ev):
+                        if mf == 1 and mwt == 2:     # MetricName name
+                            for nf, nwt, nv in _iter_fields(mv):
+                                if nf == 2 and nwt == 2:   # name.tag
+                                    metrics.append(
+                                        bytes(nv).decode("utf-8", "replace"))
+            return "experiment", {"hparams": hps, "metrics": metrics}
     return None
 
 
@@ -161,6 +228,7 @@ def _parse_value(buf: bytes):
     (payload (edges, counts)).
     """
     tag = simple = tensor = histo = plugin = None
+    content = b""
     for f, wt, v in _iter_fields(buf):
         if f == 1 and wt == 2:           # tag (string)
             tag = bytes(v).decode("utf-8", "replace")
@@ -171,13 +239,19 @@ def _parse_value(buf: bytes):
         elif f == 8 and wt == 2:         # tensor (TensorProto)
             tensor = v
         elif f == 9 and wt == 2:         # metadata (SummaryMetadata)
-            plugin = _plugin_name(v)
+            plugin, content = _plugin_data(v)
     if tag is None:
         return None
+    if plugin == "hparams":              # data lives in the metadata, not a value
+        return tag, "hparams", content
     if histo is not None:
         hp = _histo_proto(histo)
         if hp is not None:
             return tag, "histogram", hp
+    if plugin == "pr_curves" and tensor is not None:
+        pr = _tensor_to_prcurve(tensor)
+        if pr is not None:
+            return tag, "pr_curve", pr
     if simple is not None:
         return tag, "scalar", simple
     if tensor is not None:
@@ -273,8 +347,18 @@ def collect_run(run: Run, files: List[str], state: Dict[str, LightEventFile]) ->
             if step is None:
                 step = 0          # proto3 omits step==0; record it at 0
             for tag, kind, payload in values:
+                if kind == "hparams":       # not a series — fold into run metadata
+                    info = _parse_hparams(payload)
+                    if info is None:
+                        continue
+                    what, data = info
+                    if what == "values":
+                        run.hparams.update(data)
+                    elif what == "experiment" and data.get("hparams"):
+                        run.hparam_info = data
+                    continue
                 s = run.get(tag, kind)
-                if kind == "histogram":
+                if kind in ("histogram", "pr_curve"):
                     s.append(step, payload[0], payload[1], wall_time)
                 else:                       # scalar (float) or text (str)
                     s.append(step, payload, wall_time)

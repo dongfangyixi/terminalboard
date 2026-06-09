@@ -23,6 +23,19 @@ _ZOOM_LADDER = [
     (1, 1), (1, 2), (2, 2), (2, 3), (3, 3), (3, 4), (4, 4), (4, 6), (6, 6),
 ]
 
+# Type selector ('c'): cycle through None (all) and each series kind.
+_KIND_CYCLE = [None, "scalar", "histogram", "text", "pr_curve"]
+_KIND_LABEL = {None: "all", "scalar": "scalars", "histogram": "histograms",
+               "text": "text", "pr_curve": "pr-curves"}
+
+
+def _fmt_hparam(v) -> str:
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, float):
+        return f"{v:.4g}"
+    return str(v)
+
 # Characters that count as part of a "word" for word-wise cursor motion / delete.
 _WORDCHARS = set(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-"
@@ -146,6 +159,10 @@ class App:
         self._textdiff = False  # text detail: show only keys that differ across runs
         self._status = ""       # transient status line (e.g. after CSV export)
         self._csv_dir = csv_dir  # default folder pre-filled in the CSV save prompt
+        self._distmode = False  # histograms shown as distribution bands (b)
+        self._kind_filter = None  # type selector: None=all, else a single kind (c)
+        self._hparams = False   # full-screen HParams table mode (P)
+        self._hparams_total = 0  # row count (for scroll clamping)
         # Start at the ladder rung closest to the requested grid's panel count.
         target = max(1, rows) * max(1, cols)
         self._zoom = min(
@@ -178,7 +195,8 @@ class App:
                 "tag_filter": self.tag_filter, "run_filter": self.run_filter,
                 "smooth": self.smooth, "xaxis": self.xaxis, "logy": self.logy,
                 "order_rot": self._order_rot, "zoom": self._zoom,
-                "focus": self._focus,
+                "focus": self._focus, "distmode": self._distmode,
+                "kind_filter": self._kind_filter,
             }
             with open(path, "w") as f:
                 json.dump(state, f, indent=2)
@@ -215,14 +233,29 @@ class App:
             self.rows, self.cols = _ZOOM_LADDER[self._zoom]
         if "focus" not in ex and isinstance(s.get("focus"), int):
             self._focus = max(0, s["focus"])
+        if "distmode" not in ex and isinstance(s.get("distmode"), bool):
+            self._distmode = s["distmode"]
+        if "kind_filter" not in ex and s.get("kind_filter") in _KIND_CYCLE:
+            self._kind_filter = s["kind_filter"]
 
     # -- tag selection -------------------------------------------------------
+
+    def _kind_of(self, tag: str) -> Optional[str]:
+        """The series kind for ``tag`` (from the first visible run that has it)."""
+        for run in self._visible_runs().values():
+            s = run.series.get(tag)
+            if s is not None:
+                return s.kind
+        return None
 
     def _matching_tags(self) -> List[str]:
         # A tag is shown only if at least one *visible* run actually has it.
         visible = self._visible_runs()
         tags = sorted({t for run in visible.values() for t in run.series})
-        return [t for t in tags if match_filter(self.tag_filter, t)]
+        tags = [t for t in tags if match_filter(self.tag_filter, t)]
+        if self._kind_filter:               # type selector (c)
+            tags = [t for t in tags if self._kind_of(t) == self._kind_filter]
+        return tags
 
     def _visible_runs(self):
         runs = self.reader.runs
@@ -266,21 +299,25 @@ class App:
         runs_str = f"{n_vis}/{n_all}" if self.run_filter else str(n_all)
         tflt = self.tag_filter or "*"
         eflt = self.run_filter or "*"
+        kind = ""
+        if self._kind_filter:
+            kind = f"  \033[1;35mtype={_KIND_LABEL[self._kind_filter]}\033[0m (\033[36mc\033[0m)"
+        dist = "  \033[35mdist\033[0m" if self._distmode else ""
         return (
             f"\033[1mterminalboard\033[0m  "
             f"exp={runs_str} (\033[36mf\033[0m:{eflt})  "
-            f"tags={len(tags)} (\033[36mt\033[0m:{tflt})  "
+            f"tags={len(tags)} (\033[36mt\033[0m:{tflt}){kind}  "
             f"page {page + 1}/{n_pages}  "
             f"smooth={self.smooth:.2f}  x={self.xaxis}  "
-            f"y={'log' if self.logy else 'lin'}"
+            f"y={'log' if self.logy else 'lin'}{dist}"
         )
 
     def _footer(self) -> str:
         per_page = self.rows * self.cols
         return (
             "\033[2m[arrows]focus [Enter]inspect [n/p]page [f/t]ilter "
-            f"[z/Z]zoom({per_page}) [o]rder [+/-/0]smooth [x]axis [l]og "
-            "[w]csv [H]elp [q/Esc]uit\033[0m"
+            f"[c]type [z/Z]zoom({per_page}) [o]rder [b]dist [+/-/0]smooth "
+            "[x]axis [l]og [w]csv [P]hparams [H]elp [q/Esc]uit\033[0m"
         )
 
     def _prompt_footer(self, label: str, text: str, pos: int, kind: str,
@@ -376,6 +413,8 @@ class App:
         return tokens
 
     def _build_frame(self, prompt=None) -> str:
+        if self._hparams and prompt is None:
+            return self._build_hparams_frame()
         if self._detail is not None and prompt is None:
             return self._build_detail_frame()
         cols, rows = shutil.get_terminal_size((100, 30))
@@ -391,9 +430,61 @@ class App:
             width=cols, height=max(4, rows - 2), run_colors=self._run_colors(),
             run_order=self._run_order(), xaxis=self.xaxis, logy=self.logy,
             focus=(-1 if prompt else focus_cell),
+            hist_mode=("dist" if self._distmode else "heatmap"),
         )
         frame = f"{header}\n{body}\n{footer}"
         return self._crop(frame, rows)
+
+    # -- HParams table view --------------------------------------------------
+
+    def _hparams_columns(self):
+        """(ordered hparam names, metric tags) — from the experiment def if any,
+        else the union of values seen across runs."""
+        runs = self._visible_runs()
+        info = next((r.hparam_info for r in runs.values() if r.hparam_info), None)
+        seen = {k for r in runs.values() for k in r.hparams}
+        if info and info.get("hparams"):
+            ordered = [h for h in info["hparams"] if h in seen or True]
+            extra = sorted(k for k in seen if k not in info["hparams"])
+            metrics = [m for m in info.get("metrics", [])
+                       if any(m in r.series for r in runs.values())]
+            return ordered + extra, metrics
+        return sorted(seen), []
+
+    def _hparams_rows(self, hps, metrics):
+        runs = self._visible_runs()
+        rows = []
+        for name in sorted(runs):
+            r = runs[name]
+            if not r.hparams:
+                continue
+            cells = [name]
+            for h in hps:
+                v = r.hparams.get(h)
+                cells.append("" if v is None else _fmt_hparam(v))
+            for m in metrics:
+                s = r.series.get(m)
+                cells.append(f"{s.values[-1]:.4g}" if s and s.values else "")
+            rows.append(cells)
+        return rows
+
+    def _build_hparams_frame(self) -> str:
+        from .render import hparams_table
+        cols, rows = shutil.get_terminal_size((100, 30))
+        hps, metrics = self._hparams_columns()
+        data = self._hparams_rows(hps, metrics)
+        header = (f"\033[1mterminalboard\033[0m  HParams  "
+                  f"runs={len(data)}  hparams={len(hps)}  metrics={len(metrics)}")
+        footer = self._with_status(
+            "\033[2m↑/↓ PgUp/PgDn scroll · P/Esc back · q quit\033[0m")
+        if not data:
+            body = "\n  (no HParams logged in this logdir)"
+            return self._crop(f"{header}\n{body}\n{footer}", rows)
+        titles = ["run"] + list(hps) + list(metrics)
+        body, total = hparams_table(titles, data, cols, max(3, rows - 2),
+                                    scroll=self._scroll)
+        self._hparams_total = total
+        return self._crop(f"{header}\n{body}\n{footer}", rows)
 
     @staticmethod
     def _crop(frame: str, rows: int) -> str:
@@ -552,19 +643,31 @@ class App:
                           f"{diff} · Esc back\033[0m")
         elif kind == "scalar":
             return self._scalar_detail(tag, names, cols, rows, body_h)
+        elif kind == "pr_curve":
+            track = self._scalar_track(tag, names)           # union of pr steps
+            self._cursor = max(0, min(self._cursor, max(0, len(track) - 1)))
+            step = track[self._cursor] if track else None
+            header = (f"\033[1m{tag}\033[0m  step {step}  "
+                      f"({self._cursor + 1}/{max(1, len(track))})  "
+                      f"exps={len(names)}  kind={kind}")
+            body = self.renderer.detail_prcurve(
+                runs, tag, order=self._run_order(), run_color=self._run_colors(),
+                w=cols, h=body_h, step=step)
+            footer = "\033[2m←/→ step · Home/End · Esc back\033[0m"
         else:                                            # histogram
             sel = names[self._detail_run % len(names)]
             order = [n for n in names if n != sel] + [sel]   # selected on top
+            view = "distribution" if self._distmode else "histogram"
             header = (f"\033[1m{tag}\033[0m  [{sel}]  "
                       f"exp {self._detail_run % len(names) + 1}/{len(names)}  "
-                      f"kind={kind}")
+                      f"{view}")
             body = self.renderer.frame(
                 runs, [tag], smooth=self.smooth, max_cols=1,
                 width=cols, height=body_h, run_colors=self._run_colors(),
-                run_order=order,
+                run_order=order, hist_mode=("dist" if self._distmode else "heatmap"),
             )
             switch = "←/→ switch exp · " if len(names) > 1 else ""
-            footer = f"\033[2m{switch}Esc back\033[0m"
+            footer = f"\033[2m{switch}b {view}↔ · Esc back\033[0m"
         return self._crop(f"{header}\n{body}\n{self._with_status(footer)}", rows)
 
     # -- scalar detail with a TensorBoard-style x-cursor + readout -----------
@@ -727,6 +830,7 @@ class App:
         return (page, round(self.smooth, 3), self.rows, self.cols,
                 self.tag_filter, self.run_filter, self.renderer.name,
                 self._order_rot, self._detail, self.xaxis, self.logy,
+                self._distmode, self._kind_filter, self._hparams,
                 shutil.get_terminal_size((100, 30)))
 
     def _signature(self):
@@ -782,7 +886,10 @@ class App:
                     if chunk is None:
                         break
                     for tok in self._parse_chunk(chunk):
-                        if self._detail is not None:
+                        if self._hparams:
+                            if self._handle_hparams_key(screen, keys, tok) == "quit":
+                                return
+                        elif self._detail is not None:
                             if self._handle_detail_key(screen, keys, tok) == "quit":
                                 return
                         elif self._handle_grid_key(screen, keys, tok):
@@ -929,6 +1036,9 @@ class App:
             self._edit_filter(screen, keys, "tags" if tok == "t" else "runs")
         elif tok in ("H", "?"):
             self._show_help(screen, keys)
+        elif tok == "P":                                # HParams table mode
+            self._hparams = True
+            self._scroll = 0
         elif tok in ("q", "Q", "\x03", "\x04", "ESC"):
             return True
         elif tok in ("\r", "\n"):                       # inspect focused panel
@@ -977,6 +1087,13 @@ class App:
             self.logy = not self.logy
         elif ch == "x":
             self.xaxis = "time" if self.xaxis == "step" else "step"
+        elif ch == "b":                              # histograms ↔ distributions
+            self._distmode = not self._distmode
+        elif ch == "c":                              # cycle the type selector
+            i = _KIND_CYCLE.index(self._kind_filter) if self._kind_filter \
+                in _KIND_CYCLE else 0
+            self._kind_filter = _KIND_CYCLE[(i + 1) % len(_KIND_CYCLE)]
+            self._focus = 0
 
     def _handle_detail_key(self, screen, keys, tok: str):
         """Handle a key in the detail (drill-down) view.
@@ -1000,7 +1117,7 @@ class App:
         kind = self._visible_runs()[names[0]].series[self._detail].kind
         nruns = len(names)
 
-        if kind == "scalar":                            # ←/→ move the x-cursor
+        if kind in ("scalar", "pr_curve"):              # ←/→ move the x-cursor
             steps = max(1, len(self._scalar_track(self._detail, names)))
             fast = max(2, steps // 25)                   # Shift/Pg jump amount
             if tok == "LEFT":
@@ -1051,6 +1168,31 @@ class App:
                 self._handle_view_key(tok)
         return None
 
+    def _handle_hparams_key(self, screen, keys, tok: str):
+        """Keys in the HParams table view. Returns 'quit' on q/Ctrl-C/D."""
+        if tok in ("\x03", "\x04", "q", "Q"):
+            return "quit"
+        self._status = ""
+        if tok in ("ESC", "P", "\r", "\n"):             # back to grid
+            self._hparams = False
+            self._scroll = 0
+            return None
+        page = max(1, shutil.get_terminal_size((100, 30))[1] - 4)
+        if tok == "UP":
+            self._scroll -= 1
+        elif tok == "DOWN":
+            self._scroll += 1
+        elif tok == "PGUP":
+            self._scroll -= page
+        elif tok == "PGDN":
+            self._scroll += page
+        elif tok == "HOME":
+            self._scroll = 0
+        elif tok == "END":
+            self._scroll = 10 ** 9
+        self._scroll = max(0, min(self._scroll, max(0, self._hparams_total - 1)))
+        return None
+
     # -- help overlay --------------------------------------------------------
 
     def _help_lines(self) -> List[str]:
@@ -1078,11 +1220,14 @@ class App:
             row("Enter", "inspect focused panel (full screen)"),
             row("n / Space / j", "next page"),
             row("p / k", "previous page"),
+            row("c", "type selector: all → scalars → histograms → …"),
             row("z / Z", "zoom out / in (panels per page)"),
             row("o", "cycle curve order (which run is on top)"),
+            row("b", "histograms ↔ distribution bands"),
             row("x", "x-axis: step ↔ time"),
             row("l", "toggle log-scale Y"),
             row("w", "export focused scalar to CSV"),
+            row("P", "HParams table (runs × hyperparams × metrics)"),
             row("r", "refresh now"),
             row("q / Esc", "quit"),
         ]
@@ -1100,7 +1245,9 @@ class App:
             row("d", "config diff (only the keys that differ)"),
         ]
         L.append(hdr("Detail view — histogram"))
-        L += [row("←/→", "switch experiment")]
+        L += [row("←/→", "switch experiment"), row("b", "heatmap ↔ distribution")]
+        L.append(hdr("Detail view — pr-curve"))
+        L += [row("←/→", "step through training (Home/End)")]
         L.append(row("Esc", "back to grid (Esc again to quit)"))
         L.append("")
         L.append(hdr("Smoothing"))
@@ -1136,7 +1283,8 @@ class App:
         ]
         L.append("")
         L.append(hdr("Plot types"))
-        L.append(note("scalars (curves) · text summaries · histograms (heatmap)"))
+        L.append(note("scalars · text · histograms (heatmap/distribution) ·"))
+        L.append(note("pr-curves · hparams table"))
         L.append("")
         L.append(hdr("View state"))
         L.append(note("filters, zoom, smoothing, axis, order and focus are saved"))

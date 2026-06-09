@@ -71,6 +71,48 @@ def histogram_value(tag: str, edges, counts) -> bytes:
     return _ld(1, tag.encode()) + _ld(5, hp)
 
 
+def _metadata(plugin: str, content: bytes = b"") -> bytes:
+    # SummaryMetadata.plugin_data(1) = PluginData{plugin_name(1), content(2)}
+    return _ld(1, _ld(1, plugin.encode()) + _ld(2, content))
+
+
+def pr_curve_value(tag: str, precision, recall) -> bytes:
+    # PR-curve tensor: shape [6, N] = tp/fp/tn/fn/precision/recall (DT_FLOAT)
+    n = len(precision)
+    rows = [0.0] * (4 * n) + list(precision) + list(recall)
+    floats = struct.pack(f"<{len(rows)}f", *rows)
+    tensor = _key(1, 0) + _varint(1) + _key(5, 2) + _varint(len(floats)) + floats
+    return _ld(1, tag.encode()) + _ld(8, tensor) + _ld(9, _metadata("pr_curves"))
+
+
+def _struct_value(val) -> bytes:
+    if isinstance(val, bool):
+        return _key(4, 0) + _varint(1 if val else 0)
+    if isinstance(val, (int, float)):
+        return _key(2, 1) + struct.pack("<d", float(val))
+    return _ld(3, str(val).encode())
+
+
+def hparams_session(values: dict) -> bytes:
+    # HParamsPluginData{session_start_info(3){ map<string,Value> hparams(1) }}
+    entries = b""
+    for k, v in values.items():
+        entries += _ld(1, _ld(1, k.encode()) + _ld(2, _struct_value(v)))
+    meta = _metadata("hparams", _ld(3, entries))
+    return _ld(1, b"_hparams_/session_start_info") + _ld(9, meta)
+
+
+def hparams_experiment(hparam_names, metric_tags) -> bytes:
+    # HParamsPluginData{experiment(2){ hparam_infos(5), metric_infos(6) }}
+    exp = b""
+    for name in hparam_names:
+        exp += _ld(5, _ld(1, name.encode()))           # HParamInfo.name(1)
+    for tag in metric_tags:
+        exp += _ld(6, _ld(1, _ld(2, tag.encode())))    # MetricInfo.name(1).tag(2)
+    meta = _metadata("hparams", _ld(2, exp))
+    return _ld(1, b"_hparams_/experiment") + _ld(9, meta)
+
+
 def _event(step: int, wall: float, values) -> bytes:
     e = _key(1, 1) + struct.pack("<d", wall)      # wall_time (double)
     e += _key(2, 0) + _varint(step)               # step (int64)

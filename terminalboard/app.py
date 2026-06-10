@@ -612,13 +612,17 @@ class App:
             return f"page {p}"
         return None
 
-    def _llm_run(self, question: str):
-        """Build messages, call the model, apply actions. Returns (text, applied,
-        usage) or raises. Pure orchestration — UI lives in _handle_ask."""
+    def _llm_run(self, question: str, on_delta=None):
+        """Build messages, call the model (streaming if ``on_delta`` given), apply
+        actions. Returns (text, applied, usage). UI lives in _handle_ask."""
         cfg = self._llm_config
-        result = _llm.ask(cfg, _llm.build_messages(self._llm_context(), question,
-                                                   self._llm_history),
-                          _llm.build_tools(), complete=self._llm_complete)
+        msgs = _llm.build_messages(self._llm_context(), question, self._llm_history)
+        tools = _llm.build_tools()
+        if on_delta is not None:
+            result = _llm.ask_stream(cfg, msgs, tools, complete=self._llm_complete,
+                                     on_delta=on_delta)
+        else:
+            result = _llm.ask(cfg, msgs, tools, complete=self._llm_complete)
         applied = []
         for nm, ar in result["tool_calls"]:
             desc = self._llm_apply_action(nm, ar)
@@ -1511,31 +1515,40 @@ class App:
         if not question:
             return
 
-        out: dict = {}
+        out: dict = {"partial": ""}
+        lock = threading.Lock()
+
+        def on_delta(frag):
+            with lock:
+                out["partial"] += frag
 
         def work():
             try:
-                out["res"] = self._llm_run(question)
+                out["res"] = self._llm_run(question, on_delta=on_delta)
             except Exception as e:                       # surfaced in an overlay
                 out["err"] = e
 
+        t0 = time.monotonic()
         th = threading.Thread(target=work, daemon=True)
         th.start()
         frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
         i = 0
         while th.is_alive():
-            self._status = (f"\033[36m{frames[i % len(frames)]}\033[0m thinking…  "
-                            "\033[2m(Esc cancel)\033[0m")
-            screen.draw(self._build_frame(), hard=False)
+            with lock:
+                partial = out["partial"]
+            screen.draw(self._stream_frame(question, partial,
+                                           frames[i % len(frames)]), hard=True)
             i += 1
             chunk = keys.get(0.1)
             if chunk and any(t == "ESC" for t in self._parse_chunk(chunk)):
                 self._status = "ask cancelled"
                 return                                   # thread is daemon; abandon
+        elapsed = time.monotonic() - t0
         if "err" in out:
             self._status = "LLM error"
             self._show_text_overlay(screen, keys, "LLM error",
-                                    self._wrap_overlay(str(out["err"])))
+                                    ["\033[1;31m" + _llm.friendly_error(out["err"])
+                                     + "\033[0m", ""] + self._wrap_overlay(str(out["err"])))
             return
         text, applied, usage = out["res"]
         bits = []
@@ -1544,7 +1557,11 @@ class App:
         us = _llm.usage_summary(usage)
         if us:
             bits.append(us)
-        self._status = "🤖 " + ("  ".join(bits) if bits else "done")
+        cost = _llm.estimate_cost(self._llm_config.model, usage)
+        if cost:
+            bits.append(f"${cost:.4f}")
+        bits.append(f"{elapsed:.1f}s")
+        self._status = "🤖 " + "  ".join(bits)
         if text:
             lines = []
             if applied:
@@ -1552,6 +1569,16 @@ class App:
                 lines.append("")
             lines += self._wrap_overlay(text)
             self._show_text_overlay(screen, keys, "🤖 " + question, lines)
+
+    def _stream_frame(self, question: str, partial: str, spin: str) -> str:
+        cols, rows = shutil.get_terminal_size((100, 30))
+        head = [f"\033[1m🤖 {question}\033[0m  \033[36m{spin}\033[0m "
+                "\033[2m(Esc cancel)\033[0m", ""]
+        body = self._wrap_overlay(partial) if partial else ["\033[2mthinking…\033[0m"]
+        body_h = max(1, rows - len(head) - 1)
+        view = body[-body_h:]                            # auto-scroll to the tail
+        foot = "\033[2m  streaming…\033[0m"
+        return self._crop("\n".join(head + view + [foot]), rows)
 
     def _wrap_overlay(self, text: str) -> List[str]:
         cols, _ = shutil.get_terminal_size((100, 30))

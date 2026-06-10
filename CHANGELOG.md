@@ -9,8 +9,11 @@
   **analyzes** your results, in one turn. Powered by **LiteLLM**, so any provider
   works (OpenAI / Anthropic / Gemini / OpenRouter / local Ollama / …) — you pick
   the model string + key in a first-run setup form (`A` to reconfigure). Actions
-  are a typed whitelist (no shell). ⚠️ queries send tag names + metric summaries
-  to your chosen provider; use a local model (Ollama) to keep everything on-box.
+  are a typed whitelist (no shell). Answers **stream** as they arrive, with
+  follow-up memory (so "now zoom into that" works), context-aware "explain this
+  panel" from the detail view, and a tokens/cost/latency readout. ⚠️ queries send
+  tag names + metric summaries to your chosen provider; use a local model
+  (Ollama) to keep everything on-box.
 
 ## 0.4.0 — 2026-06-09
 

@@ -220,6 +220,85 @@ def ask(config: LLMConfig, messages: List[dict], tools: List[dict], *,
             "message": msg}
 
 
+def ask_stream(config: LLMConfig, messages: List[dict], tools: List[dict], *,
+               complete: Optional[Callable] = None, on_delta: Optional[Callable] = None,
+               temperature: float = 0.2, max_tokens: int = 1024) -> dict:
+    """Like ``ask`` but streams: calls ``on_delta(text_fragment)`` as content
+    arrives, and reassembles tool calls from deltas. Returns the same dict."""
+    complete = complete or _default_complete
+    stream = _call(config, complete, messages=messages, tools=tools,
+                   tool_choice="auto", temperature=temperature,
+                   max_tokens=max_tokens, stream=True,
+                   stream_options={"include_usage": True})
+    parts: List[str] = []
+    frags: dict = {}            # index -> {"name", "args"}
+    usage = None
+    for chunk in stream:
+        choices = _get(chunk, "choices") or []
+        if choices:
+            delta = _get(choices[0], "delta")
+            if delta is not None:
+                c = _get(delta, "content")
+                if c:
+                    parts.append(c)
+                    if on_delta:
+                        on_delta(c)
+                for tc in (_get(delta, "tool_calls") or []):
+                    idx = _get(tc, "index") or 0
+                    fn = _get(tc, "function")
+                    slot = frags.setdefault(idx, {"name": None, "args": ""})
+                    nm = _get(fn, "name") if fn else None
+                    if nm:
+                        slot["name"] = nm
+                    ar = _get(fn, "arguments") if fn else None
+                    if ar:
+                        slot["args"] += ar
+        u = _get(chunk, "usage")
+        if u:
+            usage = u
+    tool_calls = []
+    for idx in sorted(frags):
+        slot = frags[idx]
+        if slot["name"] not in ACTION_NAMES:
+            continue
+        try:
+            args = json.loads(slot["args"]) if slot["args"].strip() else {}
+        except Exception:
+            args = {}
+        tool_calls.append((slot["name"], args))
+    return {"text": "".join(parts).strip(), "tool_calls": tool_calls,
+            "usage": usage, "cost": estimate_cost(config.model, usage)}
+
+
+def estimate_cost(model: str, usage) -> Optional[float]:
+    if not usage:
+        return None
+    try:
+        import litellm
+        pt = _get(usage, "prompt_tokens") or 0
+        ct = _get(usage, "completion_tokens") or 0
+        pc, cc = litellm.cost_per_token(model=model, prompt_tokens=pt,
+                                        completion_tokens=ct)
+        return (pc or 0.0) + (cc or 0.0)
+    except Exception:
+        return None
+
+
+def friendly_error(exc) -> str:
+    """Map a provider/LiteLLM exception to a short, actionable message."""
+    s = str(exc)
+    low = s.lower()
+    if any(k in low for k in ("api key", "authentication", "401", "unauthorized")):
+        return "Auth failed — check your API key (press A to reconfigure)."
+    if "rate limit" in low or "429" in low:
+        return "Rate limited — wait a moment and try again."
+    if any(k in low for k in ("connection", "timeout", "timed out", "network")):
+        return "Network error — check your connection / api_base."
+    if "not found" in low or "404" in low or "does not exist" in low:
+        return "Model not found — check the model string (A to reconfigure)."
+    return s
+
+
 def usage_summary(usage) -> str:
     if not usage:
         return ""

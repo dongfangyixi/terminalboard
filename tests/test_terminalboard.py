@@ -485,6 +485,59 @@ def test_llm_followup_memory(logdir):
     assert any("[did:" in c for c in contents)
 
 
+def _fake_stream(text_chunks, tool_calls=(), usage=None):
+    """A fake streaming litellm.completion: yields OpenAI-style delta chunks."""
+    def complete(**kwargs):
+        chunks = [{"choices": [{"delta": {"content": c}}]} for c in text_chunks]
+        for idx, (n, a) in enumerate(tool_calls):       # split name/args deltas
+            s = json.dumps(a)
+            chunks.append({"choices": [{"delta": {"tool_calls": [
+                {"index": idx, "function": {"name": n, "arguments": s[:3]}}]}}]})
+            chunks.append({"choices": [{"delta": {"tool_calls": [
+                {"index": idx, "function": {"arguments": s[3:]}}]}}]})
+        chunks.append({"choices": [{"delta": {}}],
+                       "usage": usage or {"prompt_tokens": 3, "completion_tokens": 2}})
+        return iter(chunks)
+    return complete
+
+
+def test_llm_ask_stream():
+    from terminalboard import llm
+    got = []
+    out = llm.ask_stream(
+        llm.LLMConfig("m"), [{"role": "user", "content": "hi"}], llm.build_tools(),
+        complete=_fake_stream(["Hel", "lo ", "world"],
+                              tool_calls=[("set_logy", {"on": True})]),
+        on_delta=got.append)
+    assert "".join(got) == "Hello world"
+    assert out["text"] == "Hello world"
+    assert out["tool_calls"] == [("set_logy", {"on": True})]
+    assert out["usage"]["completion_tokens"] == 2
+
+
+def test_llm_run_streaming(logdir):
+    from terminalboard import llm
+    a = App(make_reader(str(logdir)), TextRenderer())
+    a.reader.poll()
+    a._llm_config = llm.LLMConfig("m")
+    a._llm_complete = _fake_stream(["analyzing… ", "loss looks good"],
+                                   tool_calls=[("set_smoothing", {"value": 0.5})])
+    got = []
+    text, applied, usage = a._llm_run("how is it", on_delta=got.append)
+    assert "".join(got).startswith("analyzing")
+    assert a.smooth == 0.5
+    assert "loss looks good" in text
+
+
+def test_llm_friendly_error_and_cost():
+    from terminalboard import llm
+    assert "Auth" in llm.friendly_error(Exception("Invalid API key provided"))
+    assert "Rate" in llm.friendly_error(Exception("rate limit exceeded (429)"))
+    assert "Model not found" in llm.friendly_error(Exception("model does not exist"))
+    # no litellm installed -> cost is unknown (None), never crashes
+    assert llm.estimate_cost("gpt-4o", {"prompt_tokens": 1, "completion_tokens": 1}) is None
+
+
 def test_llm_config_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     from terminalboard import llm

@@ -261,6 +261,42 @@ logdir — so you pick up where you left off. State lives under
 CLI flags (e.g. `--tags`, `--smooth`) override the saved values; `--reset-view`
 starts fresh, and `restore = false` in the config turns persistence off.
 
+## LLM assistant (`a`) — optional
+
+Press **`a`** to ask in plain English. The model both **drives the dashboard**
+(filter tags/experiments, pick a type, smooth, zoom, open a tag, open the HParams
+table…) and **analyzes** your results — in one turn. Examples:
+
+- *"show only validation losses, smoothed"* → applies the filter + smoothing
+- *"which run is overfitting?"* → a short comparison of train vs val gaps
+- *"open the pr curve and tell me if it's good"* → opens it and gives a verdict
+
+Install the extra and pick a model on first use:
+
+```bash
+pip install 'terminalboard[llm]'
+```
+
+It uses **[LiteLLM](https://github.com/BerriAI/litellm)**, so **any provider
+works** — you just give a model string + the matching API key in the first-run
+setup form (press `A` to change later):
+
+| Model string | Provider |
+|---|---|
+| `anthropic/claude-sonnet-4-6` | Anthropic |
+| `gpt-4o` | OpenAI |
+| `gemini/gemini-2.0-flash` | Google |
+| `ollama/llama3` | local Ollama (no key) |
+
+Answers **stream** as they arrive; the status line shows tokens, cost and time.
+Actions are a fixed, typed whitelist — the assistant can't run shell or touch
+files.
+
+> ⚠️ **Privacy:** queries send your **tag names and metric summaries** to the
+> chosen provider. Tag names can leak architecture details — if that matters,
+> use a **local model** (`ollama/...`) so nothing leaves your machine. The setup
+> form states this, and the feature is off until you configure it.
+
 ## Roadmap
 
 - [x] **Reader — `--light`**: pure-Python TFRecord + protobuf-wire parser

@@ -1709,12 +1709,12 @@ class App:
         L.append("")
         L.append("\033[2mModel string (· API base — blank for hosted providers):"
                  "\033[0m")
-        L.append("\033[2m  gpt-5-mini  ·  gpt-4o-mini            (OpenAI key)\033[0m")
+        L.append("\033[2m  gpt-5.4-nano  ·  gpt-5.4-mini         (OpenAI key)\033[0m")
         L.append("\033[2m  anthropic/claude-haiku-4-5            (Anthropic key)\033[0m")
-        L.append("\033[2m  gemini/gemini-2.0-flash               (Gemini key)\033[0m")
-        L.append("\033[2m  openrouter/qwen/qwen3-30b-a3b         (OpenRouter key)"
+        L.append("\033[2m  gemini/gemini-3.5-flash               (Gemini key)\033[0m")
+        L.append("\033[2m  openrouter/qwen/qwen3.6-35b-a3b       (OpenRouter key)"
                  "\033[0m")
-        L.append("\033[2m  hosted_vllm/Qwen/Qwen3-8B   ·  api base = "
+        L.append("\033[2m  hosted_vllm/Qwen/Qwen3.6-27B  ·  api base = "
                  "http://your-host:8000/v1\033[0m")
         L.append("")
         for idx, (label, buf) in enumerate(fields):
@@ -1728,6 +1728,9 @@ class App:
             else:
                 L.append(f"  {label:<22}{shown}")
         L.append("")
+        keypath = _llm.config_path().replace(os.path.expanduser("~"), "~")
+        L.append(f"\033[2m🔒 your API key is stored locally at {keypath} "
+                 "(chmod 600), used only to call your chosen provider\033[0m")
         L.append("\033[2m⚠ queries send your tag names + metric summaries to "
                  "this provider\033[0m")
         if testing:

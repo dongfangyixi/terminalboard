@@ -284,18 +284,21 @@ this isn't a hard task, so there's no need for a flagship (your call 🙂):
 
 | Model string | Key | API base |
 |---|---|---|
-| `gpt-5-mini` / `gpt-4o-mini` | OpenAI | *(blank)* |
+| `gpt-5.4-nano` / `gpt-5.4-mini` | OpenAI | *(blank)* |
 | `anthropic/claude-haiku-4-5` | Anthropic | *(blank)* |
-| `gemini/gemini-2.0-flash` | Google | *(blank)* |
-| `openrouter/qwen/qwen3-30b-a3b` | OpenRouter | *(blank)* |
-| `hosted_vllm/Qwen/Qwen3-8B` | *(your server)* | `http://host:8000/v1` |
+| `gemini/gemini-3.5-flash` (or `gemini/gemini-3.1-flash-lite`) | Google | *(blank)* |
+| `openrouter/qwen/qwen3.6-35b-a3b` | OpenRouter | *(blank)* |
+| `hosted_vllm/Qwen/Qwen3.6-27B` | *(your server)* | `http://host:8000/v1` |
 | `ollama/llama3` | *(none)* | *(blank — local)* |
 
 **API base** stays blank for hosted providers (LiteLLM knows their endpoints);
 you only set it for your own OpenAI-compatible server (**vLLM**, Ollama, LM
 Studio, Azure…).
 
-Answers **stream** as they arrive; the status line shows tokens, cost and time.
+Your **API key is stored locally** at `~/.local/state/terminalboard/llm.json`
+(`chmod 600`, or under `$XDG_STATE_HOME`), and is used only to call the provider
+you chose. Answers **stream** as they arrive; the status line shows tokens, cost
+and time.
 Actions are a fixed, typed whitelist — the assistant can't run shell or touch
 files.
 

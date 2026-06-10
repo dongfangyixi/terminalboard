@@ -539,6 +539,15 @@ def test_llm_friendly_error_and_cost():
     assert cost is None or cost >= 0
 
 
+def test_llm_local_cost_map_enforced():
+    # importing terminalboard.llm must pre-set the offline-cost-map switch so
+    # litellm never fetches the pricing JSON from GitHub (privacy: the only
+    # allowed traffic is to the user's chosen provider).
+    import os
+    import terminalboard.llm  # noqa: F401  (already imported; idempotent)
+    assert os.environ.get("LITELLM_LOCAL_MODEL_COST_MAP") == "true"
+
+
 def test_llm_config_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     from terminalboard import llm

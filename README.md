@@ -307,6 +307,15 @@ files.
 > use a **local model** (`ollama/...`) so nothing leaves your machine. The setup
 > form states this, and the feature is off until you configure it.
 
+**Audited:** we reviewed the pinned LiteLLM version (`1.88.1`) from source: your
+API key is sent **only** to the provider endpoint you configured (auth header),
+there is **no telemetry** (the flag exists but nothing reads it; all logging
+callbacks default to empty), and the one non-provider call — fetching a public
+pricing JSON from GitHub at import — is **disabled** by terminalboard
+(`LITELLM_LOCAL_MODEL_COST_MAP=true`, bundled snapshot used instead; only the
+$-estimate can lag provider price changes). The extra is **version-pinned** so
+what you install is what was audited; we re-audit before bumping the pin.
+
 ## Roadmap
 
 - [x] **Reader — `--light`**: pure-Python TFRecord + protobuf-wire parser

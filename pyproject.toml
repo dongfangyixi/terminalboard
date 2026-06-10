@@ -37,7 +37,9 @@ dependencies = [
 # Alternate parser backend (--tb, tensorboard's EventAccumulator).
 tb = ["tensorboard>=2.9"]
 # LLM assistant (the `a` key): natural-language navigation + analysis via LiteLLM.
-llm = ["litellm>=1.0"]
+# Pinned to the version we audited for privacy (api_key goes only to the chosen
+# provider; no telemetry; no phone-home). Re-audit before bumping.
+llm = ["litellm==1.88.1"]
 # Development / testing.
 dev = ["pytest>=7", "build", "twine"]
 

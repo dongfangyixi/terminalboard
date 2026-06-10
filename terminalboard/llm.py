@@ -17,6 +17,13 @@ import os
 from dataclasses import dataclass
 from typing import Callable, List, Optional, Tuple
 
+# Privacy: litellm's only non-provider network call is fetching a public model
+# pricing JSON from raw.githubusercontent.com at import. Use its bundled local
+# snapshot instead, so the ONLY traffic is to the provider the user configured.
+# (Affects nothing but the $-estimate, which may lag provider price changes.
+# setdefault → a user who exports it =false gets the live fetch back.)
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "true")
+
 
 # --- availability + config persistence --------------------------------------
 

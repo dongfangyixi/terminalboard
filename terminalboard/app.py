@@ -646,8 +646,10 @@ class App:
         return "\n".join(lines[:rows])
 
     def _with_status(self, footer: str) -> str:
+        # Status goes at the FRONT so it's never clipped off the right edge of a
+        # narrow terminal (line-wrap is off; the static key-hints can truncate).
         if self._status:
-            return footer + f"   \033[1;32m{self._status}\033[0m"
+            return f"\033[1;32m{self._status}\033[0m   {footer}"
         return footer
 
     def _current_tag(self) -> Optional[str]:
@@ -1504,7 +1506,15 @@ class App:
         """`a`: ask the LLM in natural language. Runs setup on first use."""
         self._status = ""
         if not _llm.is_available():
-            self._status = "LLM assistant needs:  pip install 'terminalboard[llm]'"
+            self._show_text_overlay(screen, keys, "LLM assistant — not installed", [
+                "The 'a' assistant needs the optional LLM extra:",
+                "",
+                "    pip install 'terminalboard[llm]'",
+                "",
+                "Then press 'a' again and pick a model + key, e.g.",
+                "  ollama/llama3   (local, no key)",
+                "  anthropic/claude-sonnet-4-6   ·   gpt-4o   (with a key)",
+            ])
             return
         if self._llm_config is None:
             self._llm_config = _llm.load_config()

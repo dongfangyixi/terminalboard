@@ -1703,9 +1703,19 @@ class App:
     def _llm_setup_frame(self, fields, fi, pos, error, testing) -> str:
         cols, rows = shutil.get_terminal_size((100, 30))
         L = ["\033[1mterminalboard — set up the LLM assistant\033[0m", ""]
-        L.append("\033[2mA LiteLLM model string + its API key. Examples:\033[0m")
-        L.append("\033[2m  anthropic/claude-sonnet-4-6 · gpt-4o · "
-                 "gemini/gemini-2.0-flash · ollama/llama3\033[0m")
+        L.append("\033[2mTip: a small/cheap model is plenty for this — it's not a "
+                 "hard task, no need to pay for a flagship (your call \033[0m^_^"
+                 "\033[2m).\033[0m")
+        L.append("")
+        L.append("\033[2mModel string (· API base — blank for hosted providers):"
+                 "\033[0m")
+        L.append("\033[2m  gpt-5-mini  ·  gpt-4o-mini            (OpenAI key)\033[0m")
+        L.append("\033[2m  anthropic/claude-haiku-4-5            (Anthropic key)\033[0m")
+        L.append("\033[2m  gemini/gemini-2.0-flash               (Gemini key)\033[0m")
+        L.append("\033[2m  openrouter/qwen/qwen3-30b-a3b         (OpenRouter key)"
+                 "\033[0m")
+        L.append("\033[2m  hosted_vllm/Qwen/Qwen3-8B   ·  api base = "
+                 "http://your-host:8000/v1\033[0m")
         L.append("")
         for idx, (label, buf) in enumerate(fields):
             shown = ("•" * len(buf)) if idx == 1 else "".join(buf)

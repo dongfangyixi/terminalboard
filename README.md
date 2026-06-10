@@ -279,14 +279,21 @@ pip install 'terminalboard[llm]'
 
 It uses **[LiteLLM](https://github.com/BerriAI/litellm)**, so **any provider
 works** — you just give a model string + the matching API key in the first-run
-setup form (press `A` to change later):
+setup form (press `A` to change later). A **small/cheap model is plenty** here —
+this isn't a hard task, so there's no need for a flagship (your call 🙂):
 
-| Model string | Provider |
-|---|---|
-| `anthropic/claude-sonnet-4-6` | Anthropic |
-| `gpt-4o` | OpenAI |
-| `gemini/gemini-2.0-flash` | Google |
-| `ollama/llama3` | local Ollama (no key) |
+| Model string | Key | API base |
+|---|---|---|
+| `gpt-5-mini` / `gpt-4o-mini` | OpenAI | *(blank)* |
+| `anthropic/claude-haiku-4-5` | Anthropic | *(blank)* |
+| `gemini/gemini-2.0-flash` | Google | *(blank)* |
+| `openrouter/qwen/qwen3-30b-a3b` | OpenRouter | *(blank)* |
+| `hosted_vllm/Qwen/Qwen3-8B` | *(your server)* | `http://host:8000/v1` |
+| `ollama/llama3` | *(none)* | *(blank — local)* |
+
+**API base** stays blank for hosted providers (LiteLLM knows their endpoints);
+you only set it for your own OpenAI-compatible server (**vLLM**, Ollama, LM
+Studio, Azure…).
 
 Answers **stream** as they arrive; the status line shows tokens, cost and time.
 Actions are a fixed, typed whitelist — the assistant can't run shell or touch

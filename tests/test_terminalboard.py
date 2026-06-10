@@ -534,8 +534,9 @@ def test_llm_friendly_error_and_cost():
     assert "Auth" in llm.friendly_error(Exception("Invalid API key provided"))
     assert "Rate" in llm.friendly_error(Exception("rate limit exceeded (429)"))
     assert "Model not found" in llm.friendly_error(Exception("model does not exist"))
-    # no litellm installed -> cost is unknown (None), never crashes
-    assert llm.estimate_cost("gpt-4o", {"prompt_tokens": 1, "completion_tokens": 1}) is None
+    # cost is None when litellm is absent, else a non-negative float — never raises
+    cost = llm.estimate_cost("gpt-4o", {"prompt_tokens": 1, "completion_tokens": 1})
+    assert cost is None or cost >= 0
 
 
 def test_llm_config_roundtrip(tmp_path, monkeypatch):

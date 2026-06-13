@@ -5,11 +5,17 @@
 [![Python versions](https://img.shields.io/pypi/pyversions/terminalboard)](https://pypi.org/project/terminalboard/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A **pure-terminal TensorBoard viewer**.
+A **pure-terminal TensorBoard viewer — with an AI assistant built in.**
 
-Watch your **live-updating scalar curves, text summaries, histogram heatmaps
-right inside any terminal** — locally, or SSH'd into a remote training box —
-drawn as crisp Unicode/braille. No browser, no X11, no port forwarding.
+Watch your **live-updating scalar curves, text summaries, histogram
+heatmaps/distributions, PR curves and an HParams table right inside any
+terminal** — locally, or SSH'd into a remote training box — drawn as crisp
+Unicode/braille. No browser, no X11, no port forwarding.
+
+And press **`a`** to **chat with your runs**: an optional LLM assistant that
+answers questions, analyzes results, and **drives the dashboard for you** in
+plain English — using any provider (OpenAI, Anthropic, Gemini, DeepSeek, local
+Ollama/vLLM…) via [LiteLLM](https://github.com/BerriAI/litellm).
 
 ```bash
 terminalboard path/to/tb_logs        # runs in any terminal, local or remote
@@ -18,6 +24,19 @@ terminalboard path/to/tb_logs        # runs in any terminal, local or remote
 #   ssh remote
 #   terminalboard path/to/tb_logs
 ```
+
+**Highlights**
+
+- 📈 Live scalar curves, text, histograms (heatmap **or** distribution bands),
+  PR curves, and a runs × hyperparameters **HParams table** — all as terminal text.
+- 🔍 Multi-experiment overlay with stable colors, smoothing, log-Y, step↔time,
+  zoom, a powerful tag/experiment filter grammar, and a drill-down detail view
+  with a value cursor.
+- 🤖 **AI assistant** (`a`): a multi-session chat sidebar (or full-screen) that
+  sees your live view + all log data, *answers and operates the dashboard*, and
+  works with any LLM provider — opt-in, audited, and privacy-conscious.
+- 🪶 One small dependency by default (`plotext`); everything heavier
+  (`tensorboard`, `litellm`) is an optional extra.
 
 ---
 
@@ -40,6 +59,9 @@ terminal and the event files.
    live dashboard. Repaints are **flicker-free**: the alternate screen buffer is
    redrawn in place under synchronized output (DEC mode 2026), and an idle
    dashboard isn't repainted at all (only changed data/views trigger a redraw).
+4. **Ask** (optional): the LLM assistant gets a compact summary of your current
+   view + log data, replies in the chat, and turns natural-language requests into
+   the same typed actions the keys drive (filter, zoom, open a tag, …).
 
 ## Language: Python
 
@@ -356,22 +378,29 @@ what you install is what was audited; we re-audit before bumping the pin.
 - [x] **Curve z-order** (`o`), richer **filter grammar** (OR/AND/NOT/regex),
       readline editing, **help overlay** (`H`), and `Esc` to quit.
 - [x] **Default to the pure-Python parser**; `--tb` opts into tensorboard.
-- [ ] Config diff across experiments; per-tag y-axis options; config file.
+- [x] **Config diff** (`d`), **log-Y** (`l`), **x-axis step↔time** (`x`),
+      **CSV export** (`w`), and a **config file** + per-logdir view persistence.
+- [x] **More plot types**: histogram **distributions** (`b`), **PR curves**, an
+      **HParams table** (`P`), and a **type selector** (`c`).
+- [x] **AI assistant** (`a`): natural-language navigation + analysis chat
+      sidebar via LiteLLM (any provider), with a searchable model picker.
+- [ ] Assistant: pull-tools agent loop, redaction mode, `--analyze` report.
 
 ## Status
 
 Working. The text dashboard, the pure-Python parser (default) and `--tb`
 backend, multi-experiment overlay with z-order, zoom, focus + drill-down detail,
-live tag/experiment filtering, and the scalar / text / histogram-heatmap plot
-types are all functional. Test event logs are kept in the **parent working
-folder** (e.g. `../tb_logs/`), deliberately outside this repository — they're
-real training data and don't belong in a public repo.
+live tag/experiment filtering, all plot types (scalars, text, histogram
+heatmaps **and** distributions, PR curves, HParams table), and the optional
+**LLM chat assistant** are all functional. Test event logs are kept in the
+**parent working folder** (e.g. `../tb_logs/`), deliberately outside this
+repository — they're real training data and don't belong in a public repo.
 
 ## Development
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -e '.[tb,dev]'
+.venv/bin/pip install -e '.[tb,llm,dev]'   # llm = the optional chat assistant
 .venv/bin/terminalboard ../tb_logs --once
 ```
 

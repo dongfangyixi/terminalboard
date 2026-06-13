@@ -1,7 +1,9 @@
 """Smoke + unit tests. Run with: pytest -q"""
 from __future__ import annotations
 
+import json
 import math
+import re
 
 import pytest
 
@@ -376,6 +378,383 @@ def test_view_state_persists(logdir, tmp_path, monkeypatch):
             tag_filter="other", restore_exclude={"tag_filter"})
     assert c.tag_filter == "other"
     assert c.smooth == 0.85                       # still restored
+
+
+# -- LLM assistant -----------------------------------------------------------
+
+def _fake_completion(tool_calls=(), text="", usage=None):
+    """A fake litellm.completion: returns an OpenAI-style response (dict form)."""
+    def complete(**kwargs):
+        return {
+            "choices": [{"message": {
+                "content": text,
+                "tool_calls": [
+                    {"function": {"name": n, "arguments": json.dumps(a)}}
+                    for (n, a) in tool_calls],
+            }}],
+            "usage": usage or {"prompt_tokens": 10, "completion_tokens": 5},
+        }
+    return complete
+
+
+def test_llm_ask_parses_tool_calls():
+    from terminalboard import llm
+    cfg = llm.LLMConfig(model="x")
+    out = llm.ask(cfg, [{"role": "user", "content": "hi"}], llm.build_tools(),
+                  complete=_fake_completion(
+                      tool_calls=[("set_tag_filter", {"pattern": "val/*"}),
+                                  ("bogus_action", {})],
+                      text="done"))
+    assert out["text"] == "done"
+    # unknown actions are dropped; known ones kept
+    assert out["tool_calls"] == [("set_tag_filter", {"pattern": "val/*"})]
+
+
+def test_llm_apply_actions(logdir):
+    a = App(make_reader(str(logdir)), TextRenderer())
+    a.reader.poll()
+    assert a._llm_apply_action("set_tag_filter", {"pattern": "train/loss"})
+    assert a.tag_filter == "train/loss"
+    a._llm_apply_action("set_type", {"kind": "histogram"})
+    assert a._kind_filter == "histogram"
+    a._llm_apply_action("set_smoothing", {"value": 5})         # clamped
+    assert a.smooth == 0.99
+    a._llm_apply_action("set_distribution", {"on": True})
+    assert a._distmode is True
+    a._llm_apply_action("open_hparams", {})
+    assert a._hparams is True
+    a._llm_apply_action("set_tag_filter", {"pattern": None})
+    assert a.tag_filter is None
+    a._llm_apply_action("set_type", {"kind": "all"})           # clear kind filter
+    assert a._kind_filter is None
+    # open_detail only opens an existing (visible) tag
+    assert a._llm_apply_action("open_detail", {"tag": "no/such"}) is None
+    assert a._llm_apply_action("open_detail", {"tag": "train/loss"})
+    assert a._detail == "train/loss"
+
+
+def test_llm_run_navigates_and_records_history(logdir):
+    a = App(make_reader(str(logdir)), TextRenderer())
+    a.reader.poll()
+    a._llm_config = __import__("terminalboard.llm", fromlist=["x"]).LLMConfig("m")
+    a._llm_complete = _fake_completion(
+        tool_calls=[("set_tag_filter", {"pattern": "train/acc"})],
+        text="train/acc is rising.")
+    text, applied, usage = a._llm_run("show accuracy")
+    assert a.tag_filter == "train/acc"
+    assert any("train/acc" in x for x in applied)
+    assert "rising" in text
+    assert a._llm_history[-2] == {"role": "user", "content": "show accuracy"}
+    assistant = a._llm_history[-1]
+    assert assistant["role"] == "assistant"
+    assert "rising" in assistant["content"] and "[did:" in assistant["content"]
+
+
+def test_llm_context_is_json(logdir):
+    a = App(make_reader(str(logdir)), TextRenderer())
+    a.reader.poll()
+    ctx = json.loads(a._llm_context())
+    assert "train/loss" in ctx["scalars"]
+    assert ctx["tags_by_kind"]["scalar"]
+    # Phase 2: trend + focus context
+    assert ctx["scalars"]["train/loss"]["run_a"]["trend"] == "down"
+    assert ctx["scalars"]["train/acc"]["run_a"]["trend"] == "up"
+    # the chat must know the live view (focused/visible tags, counts)
+    assert "focused_tag" in ctx["view"]
+    assert ctx["view"]["mode"] == "grid"
+    assert ctx["view"]["visible_count"] >= 1
+    assert "train/loss" in ctx["view"]["visible_tags"]
+
+
+def test_llm_followup_memory(logdir):
+    from terminalboard import llm
+    a = App(make_reader(str(logdir)), TextRenderer())
+    a.reader.poll()
+    a._llm_config = llm.LLMConfig("m")
+    seen = {}
+
+    def complete(**kw):
+        seen["messages"] = kw["messages"]
+        return {"choices": [{"message": {"content": "ok", "tool_calls": [
+            {"function": {"name": "set_zoom", "arguments": json.dumps({"panels": 4})}}]}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1}}
+
+    a._llm_complete = complete
+    a._llm_run("zoom to four")
+    # assistant turn records the action taken
+    assert "[did:" in a._llm_history[-1]["content"]
+    a._llm_run("now show losses")
+    # the 2nd call's messages carry the 1st turn (follow-up memory)
+    contents = [m.get("content", "") for m in seen["messages"]]
+    assert any("zoom to four" in c for c in contents)
+    assert any("[did:" in c for c in contents)
+
+
+def _fake_stream(text_chunks, tool_calls=(), usage=None):
+    """A fake streaming litellm.completion: yields OpenAI-style delta chunks."""
+    def complete(**kwargs):
+        chunks = [{"choices": [{"delta": {"content": c}}]} for c in text_chunks]
+        for idx, (n, a) in enumerate(tool_calls):       # split name/args deltas
+            s = json.dumps(a)
+            chunks.append({"choices": [{"delta": {"tool_calls": [
+                {"index": idx, "function": {"name": n, "arguments": s[:3]}}]}}]})
+            chunks.append({"choices": [{"delta": {"tool_calls": [
+                {"index": idx, "function": {"arguments": s[3:]}}]}}]})
+        chunks.append({"choices": [{"delta": {}}],
+                       "usage": usage or {"prompt_tokens": 3, "completion_tokens": 2}})
+        return iter(chunks)
+    return complete
+
+
+def test_llm_ask_stream():
+    from terminalboard import llm
+    got = []
+    out = llm.ask_stream(
+        llm.LLMConfig("m"), [{"role": "user", "content": "hi"}], llm.build_tools(),
+        complete=_fake_stream(["Hel", "lo ", "world"],
+                              tool_calls=[("set_logy", {"on": True})]),
+        on_delta=got.append)
+    assert "".join(got) == "Hello world"
+    assert out["text"] == "Hello world"
+    assert out["tool_calls"] == [("set_logy", {"on": True})]
+    assert out["usage"]["completion_tokens"] == 2
+
+
+def test_llm_run_streaming(logdir):
+    from terminalboard import llm
+    a = App(make_reader(str(logdir)), TextRenderer())
+    a.reader.poll()
+    a._llm_config = llm.LLMConfig("m")
+    a._llm_complete = _fake_stream(["analyzing… ", "loss looks good"],
+                                   tool_calls=[("set_smoothing", {"value": 0.5})])
+    got = []
+    text, applied, usage = a._llm_run("how is it", on_delta=got.append)
+    assert "".join(got).startswith("analyzing")
+    assert a.smooth == 0.5
+    assert "loss looks good" in text
+
+
+def test_llm_friendly_error_and_cost():
+    from terminalboard import llm
+    assert "Auth" in llm.friendly_error(Exception("Invalid API key provided"))
+    assert "Rate" in llm.friendly_error(Exception("rate limit exceeded (429)"))
+    assert "Model not found" in llm.friendly_error(Exception("model does not exist"))
+    # cost is None when litellm is absent, else a non-negative float — never raises
+    cost = llm.estimate_cost("gpt-4o", {"prompt_tokens": 1, "completion_tokens": 1})
+    assert cost is None or cost >= 0
+
+
+def test_chat_split_renders(logdir, monkeypatch):
+    monkeypatch.setenv("COLUMNS", "120")
+    monkeypatch.setenv("LINES", "30")
+    a = App(make_reader(str(logdir)), TextRenderer())
+    a.reader.poll()
+    a._chat_open = True
+    a._chat_sessions[0]["messages"] = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "loss is falling", "text": "loss is falling",
+         "applied": ["tags=*loss*"]}]
+    frame = a._build_frame()
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", frame)
+    assert "chat 1" in plain and "loss is falling" in plain      # chat pane present
+    assert "train/loss" in plain                                  # dashboard present
+    assert "│" in frame                                          # divider
+
+
+def test_chat_esc_closes_never_quits(logdir):
+    a = App(make_reader(str(logdir)), TextRenderer())
+    a.reader.poll()
+    a._chat_open = True
+    # Esc in the chat closes the sidebar and returns None (NOT a quit)
+    assert a._handle_chat_key(_FakeScreen(), None, "ESC") is None
+    assert a._chat_open is False
+
+
+def test_chat_arrow_scroll(logdir):
+    a = App(make_reader(str(logdir)), TextRenderer())
+    a.reader.poll()
+    a._chat_open = True
+    a._chat_session()["messages"] = [
+        {"role": "assistant", "content": f"l{i}", "text": f"l{i}"} for i in range(40)]
+    a._build_frame()
+    assert a._chat_scroll == 0                              # starts at the bottom
+    a._handle_chat_key(_FakeScreen(), None, "UP")
+    a._handle_chat_key(_FakeScreen(), None, "UP")
+    assert a._chat_scroll == 2                              # arrows scroll up
+    a._handle_chat_key(_FakeScreen(), None, "DOWN")
+    assert a._chat_scroll == 1
+    # ^P recalls a sent message (no longer the up-arrow)
+    a._chat_drafts = ["earlier question"]
+    a._chat_draft_idx = 1
+    a._handle_chat_key(_FakeScreen(), None, "\x10")
+    assert "".join(a._chat_input) == "earlier question"
+
+
+def test_chat_full_screen_toggle(logdir, monkeypatch):
+    monkeypatch.setenv("COLUMNS", "100")
+    monkeypatch.setenv("LINES", "20")
+    a = App(make_reader(str(logdir)), TextRenderer())
+    a.reader.poll()
+    a._chat_open = True
+    assert "│" in a._build_frame()                          # split: has a divider
+    a._handle_chat_key(_FakeScreen(), None, "\x06")         # ^F -> full screen
+    assert a._chat_full is True
+    assert "│" not in a._build_frame()                      # full: no divider
+    a._chat_command("/split", _FakeScreen(), None)
+    assert a._chat_full is False
+
+
+def test_chat_input_rich_editing(logdir):
+    a = App(make_reader(str(logdir)), TextRenderer())
+    a.reader.poll()
+    a._chat_open = True
+    for c in "hello world":
+        a._handle_chat_key(_FakeScreen(), None, c)
+    a._handle_chat_key(_FakeScreen(), None, "\x17")        # ^W: delete word
+    assert "".join(a._chat_input) == "hello "
+    a._handle_chat_key(_FakeScreen(), None, "\x15")        # ^U: clear
+    assert a._chat_input == []
+
+
+def test_chat_greeting_on_empty(logdir, monkeypatch):
+    monkeypatch.setenv("COLUMNS", "120")
+    monkeypatch.setenv("LINES", "30")
+    a = App(make_reader(str(logdir)), TextRenderer())
+    a.reader.poll()
+    a._chat_open = True
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", a._build_frame())
+    assert "Ask about your runs" in plain                  # cold-start greeting
+
+
+def test_chat_dashboard_cached_while_typing(logdir, monkeypatch):
+    monkeypatch.setenv("COLUMNS", "120")
+    monkeypatch.setenv("LINES", "30")
+    a = App(make_reader(str(logdir)), TextRenderer())
+    a.reader.poll()
+    a._chat_open = True
+    a._build_frame()
+    sig1 = a._dash_cache[0]
+    a._handle_chat_key(_FakeScreen(), None, "z")           # typed, not a zoom
+    a._build_frame()
+    assert a._dash_cache[0] == sig1                        # dashboard not rebuilt
+    assert "z" in "".join(a._chat_input)
+
+
+def test_chat_sessions_and_commands(logdir):
+    a = App(make_reader(str(logdir)), TextRenderer())
+    a.reader.poll()
+    assert len(a._chat_sessions) == 1
+    a._chat_command("/new", _FakeScreen(), None)
+    assert len(a._chat_sessions) == 2 and a._chat_active == 1
+    a._chat_command("/rename experiments", _FakeScreen(), None)
+    assert a._chat_session()["name"] == "experiments"
+    a._chat_command("/prev", _FakeScreen(), None)
+    assert a._chat_active == 0
+    a._chat_command("/delete", _FakeScreen(), None)
+    assert len(a._chat_sessions) == 1
+
+
+def test_chat_sessions_persist(logdir, tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    a = App(make_reader(str(logdir)), TextRenderer(), restore=True)
+    a.reader.poll()
+    a._chat_sessions = [{"name": "alpha", "messages": [
+        {"role": "user", "content": "hi"}]},
+        {"name": "beta", "messages": []}]
+    a._chat_active = 1
+    a._save_view()
+    b = App(make_reader(str(logdir)), TextRenderer(), restore=True)
+    assert [s["name"] for s in b._chat_sessions] == ["alpha", "beta"]
+    assert b._chat_active == 1
+    assert b._chat_sessions[0]["messages"][0]["content"] == "hi"
+
+
+def test_chat_complete_uses_session_history_and_drives_view(logdir):
+    from terminalboard import llm
+    a = App(make_reader(str(logdir)), TextRenderer())
+    a.reader.poll()
+    a._llm_config = llm.LLMConfig("m")
+    seen = {}
+
+    def complete(**kw):                              # streaming fake (ask_stream)
+        seen["messages"] = kw["messages"]
+        return iter([
+            {"choices": [{"delta": {"content": "done"}}]},
+            {"choices": [{"delta": {"tool_calls": [
+                {"index": 0, "function": {"name": "open_hparams", "arguments": "{}"}}]}}]},
+            {"choices": [{"delta": {}}],
+             "usage": {"prompt_tokens": 1, "completion_tokens": 1}}])
+
+    a._llm_complete = complete
+    sess = a._chat_session()
+    sess["messages"].append({"role": "user", "content": "open hparams"})
+    text, applied, usage = a._chat_complete(sess, on_delta=lambda c: None)
+    assert a._hparams is True                                # drove the dashboard
+    assert sess["messages"][-1]["role"] == "assistant"
+    assert sess["messages"][-1]["applied"] == ["open hparams"]
+    # the system+history messages end with the user's prompt (no duplicate)
+    assert seen["messages"][0]["role"] == "system"
+    assert seen["messages"][-1] == {"role": "user", "content": "open hparams"}
+
+
+def test_model_catalog_and_picker(logdir):
+    from terminalboard import llm
+    cat = llm.model_catalog()
+    assert ("deepseek/deepseek-v4-flash", "DeepSeek") in cat   # curated, searchable
+    assert len(cat) > 100                                       # + litellm's chat models
+    a = App(make_reader(str(logdir)), TextRenderer())
+    a.reader.poll()
+    # search ranks curated picks first, cheap-first
+    rows = a._model_list("deepseek")
+    vals = [v for _d, v, _p in rows]
+    assert vals[0] == "deepseek/deepseek-v4-flash"
+    assert "deepseek/deepseek-v4-pro" in vals
+    # empty query shows curated; non-matching query still allows a custom entry
+    assert a._model_list("")[0][1] == "gpt-5.4-nano"
+    custom = a._model_list("my/local-model")
+    assert custom[-1][1] == "my/local-model" and custom[-1][2] == "custom"
+
+
+def test_model_picker_flow_sets_model(logdir, tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    from terminalboard import llm
+    monkeypatch.setattr(llm, "is_available", lambda: True)
+    monkeypatch.setattr(llm, "validate", lambda cfg, complete=None: (True, ""))
+    a = App(make_reader(str(logdir)), TextRenderer())
+    a.reader.poll()
+
+    class _Keys:
+        def __init__(self, seq):
+            self.q = list(seq)
+
+        def get(self, _t):
+            return self.q.pop(0) if self.q else None
+
+    # type 'deepseek', Enter picks the top (v4-flash), type key, Enter saves
+    keys = _Keys(list("deepseek") + ["\r"] + list("sk-X") + ["\r"])
+    assert a._llm_setup(_FakeScreen(), keys) is True
+    assert a._llm_config.model == "deepseek/deepseek-v4-flash"
+    assert a._llm_config.api_key == "sk-X"
+
+
+def test_llm_local_cost_map_enforced():
+    # importing terminalboard.llm must pre-set the offline-cost-map switch so
+    # litellm never fetches the pricing JSON from GitHub (privacy: the only
+    # allowed traffic is to the user's chosen provider).
+    import os
+    import terminalboard.llm  # noqa: F401  (already imported; idempotent)
+    assert os.environ.get("LITELLM_LOCAL_MODEL_COST_MAP") == "true"
+
+
+def test_llm_config_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    from terminalboard import llm
+    assert llm.load_config() is None
+    llm.save_config(llm.LLMConfig(model="gpt-4o", api_key="sk-x", api_base=""))
+    got = llm.load_config()
+    assert got.model == "gpt-4o" and got.api_key == "sk-x"
+    import os
+    assert oct(os.stat(llm.config_path()).st_mode)[-3:] == "600"
 
 
 def test_config_load(tmp_path, monkeypatch):

@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+## 0.5.0 — 2026-06-13
+
+### Added
+- **Chat sidebar** (`a` / `A`) — a persistent, **multi-session** conversation
+  panel on the right; the dashboard re-tiles into the remaining width and is
+  cached so typing only repaints the chat. The chat sees the **live view**
+  (focused tag, what's visible, counts, mode) plus all log data, **answers and
+  drives the dashboard** in the same turn, and streams its reply into the
+  transcript (light markdown). **`Esc` closes it** (never quits); the input has a
+  full editor (`^W`/`^U`/`^A`/`^E`/word-motion) with a sliding window so the
+  cursor stays on-screen; `↑/↓` recall messages, `PgUp/PgDn` scroll. Slash
+  commands manage sessions — `/new`, `/next`, `/prev`, `/delete`, `/rename`,
+  `/clear`, `/sessions`, `/model`, `/close` — persisted per-logdir.
+- **LLM assistant** (`a`) — *optional*, `pip install 'terminalboard[llm]'`.
+  Ask in natural language; the model both **navigates** the dashboard (filter
+  tags/experiments, pick a type, smooth, zoom, open a tag, open HParams, …) and
+  **analyzes** your results, in one turn. Powered by **LiteLLM**, so any provider
+  works (OpenAI / Anthropic / Gemini / OpenRouter / local Ollama / …) — you pick
+  the model string + key in a first-run setup form (`A` to reconfigure). Actions
+  are a typed whitelist (no shell). Answers **stream** as they arrive, with
+  follow-up memory (so "now zoom into that" works), context-aware "explain this
+  panel" from the detail view, and a tokens/cost/latency readout. ⚠️ queries send
+  tag names + metric summaries to your chosen provider; use a local model
+  (Ollama) to keep everything on-box.
+
 ## 0.4.0 — 2026-06-09
 
 ### Added

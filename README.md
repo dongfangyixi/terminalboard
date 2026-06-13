@@ -5,11 +5,17 @@
 [![Python versions](https://img.shields.io/pypi/pyversions/terminalboard)](https://pypi.org/project/terminalboard/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A **pure-terminal TensorBoard viewer**.
+A **pure-terminal TensorBoard viewer — with an AI assistant built in.**
 
-Watch your **live-updating scalar curves, text summaries, histogram heatmaps
-right inside any terminal** — locally, or SSH'd into a remote training box —
-drawn as crisp Unicode/braille. No browser, no X11, no port forwarding.
+Watch your **live-updating scalar curves, text summaries, histogram
+heatmaps/distributions, PR curves and an HParams table right inside any
+terminal** — locally, or SSH'd into a remote training box — drawn as crisp
+Unicode/braille. No browser, no X11, no port forwarding.
+
+And press **`a`** to **chat with your runs**: an optional LLM assistant that
+answers questions, analyzes results, and **drives the dashboard for you** in
+plain English — using any provider (OpenAI, Anthropic, Gemini, DeepSeek, local
+Ollama/vLLM…) via [LiteLLM](https://github.com/BerriAI/litellm).
 
 ```bash
 terminalboard path/to/tb_logs        # runs in any terminal, local or remote
@@ -18,6 +24,19 @@ terminalboard path/to/tb_logs        # runs in any terminal, local or remote
 #   ssh remote
 #   terminalboard path/to/tb_logs
 ```
+
+**Highlights**
+
+- 📈 Live scalar curves, text, histograms (heatmap **or** distribution bands),
+  PR curves, and a runs × hyperparameters **HParams table** — all as terminal text.
+- 🔍 Multi-experiment overlay with stable colors, smoothing, log-Y, step↔time,
+  zoom, a powerful tag/experiment filter grammar, and a drill-down detail view
+  with a value cursor.
+- 🤖 **AI assistant** (`a`): a multi-session chat sidebar (or full-screen) that
+  sees your live view + all log data, *answers and operates the dashboard*, and
+  works with any LLM provider — opt-in, audited, and privacy-conscious.
+- 🪶 One small dependency by default (`plotext`); everything heavier
+  (`tensorboard`, `litellm`) is an optional extra.
 
 ---
 
@@ -40,6 +59,9 @@ terminal and the event files.
    live dashboard. Repaints are **flicker-free**: the alternate screen buffer is
    redrawn in place under synchronized output (DEC mode 2026), and an idle
    dashboard isn't repainted at all (only changed data/views trigger a redraw).
+4. **Ask** (optional): the LLM assistant gets a compact summary of your current
+   view + log data, replies in the chat, and turns natural-language requests into
+   the same typed actions the keys drive (filter, zoom, open a tag, …).
 
 ## Language: Python
 
@@ -261,6 +283,82 @@ logdir — so you pick up where you left off. State lives under
 CLI flags (e.g. `--tags`, `--smooth`) override the saved values; `--reset-view`
 starts fresh, and `restore = false` in the config turns persistence off.
 
+## LLM assistant — optional
+
+Two ways to use it: **`a`** for a quick one-shot question (answer in an overlay),
+or **`A`** for a persistent **chat sidebar** on the right.
+
+The model both **drives the dashboard** (filter tags/experiments, pick a type,
+smooth, zoom, open a tag, open the HParams table…) and **analyzes** your results
+— in one turn. Examples:
+
+- *"show only validation losses, smoothed"* → applies the filter + smoothing
+- *"which run is overfitting?"* → a short comparison of train vs val gaps
+- *"open the pr curve and tell me if it's good"* → opens it and gives a verdict
+
+Install the extra and pick a model on first use:
+
+```bash
+pip install 'terminalboard[llm]'
+```
+
+It uses **[LiteLLM](https://github.com/BerriAI/litellm)**, so **any provider
+works**. On first use a setup form lets you **search a model** (type `deepseek`,
+`qwen`, `claude`, `gpt`… → pick from the list with `↑/↓` + Enter, or type any
+custom/self-hosted string), then enter the matching API key. A **small/cheap
+model is plenty** here — this isn't a hard task, so there's no need for a
+flagship (your call 🙂). Some current light picks:
+
+| Model string | Key | API base |
+|---|---|---|
+| `gpt-5.4-nano` / `gpt-5.4-mini` | OpenAI | *(blank)* |
+| `anthropic/claude-haiku-4-5` | Anthropic | *(blank)* |
+| `gemini/gemini-3.5-flash` (or `gemini/gemini-3.1-flash-lite`) | Google | *(blank)* |
+| `deepseek/deepseek-v4-flash` | DeepSeek | *(blank)* |
+| `openrouter/qwen/qwen3.6-35b-a3b` | OpenRouter | *(blank)* |
+| `hosted_vllm/Qwen/Qwen3.6-27B` | *(your server)* | `http://host:8000/v1` |
+| `ollama/llama3` | *(none)* | *(blank — local)* |
+
+**API base** stays blank for hosted providers (LiteLLM knows their endpoints);
+you only set it for your own OpenAI-compatible server (**vLLM**, Ollama, LM
+Studio, Azure…).
+
+Your **API key is stored locally** at `~/.local/state/terminalboard/llm.json`
+(`chmod 600`, or under `$XDG_STATE_HOME`), and is used only to call the provider
+you chose. Answers **stream** as they arrive; the status line shows tokens, cost
+and time.
+Actions are a fixed, typed whitelist — the assistant can't run shell or touch
+files.
+
+### Chat sidebar (`a` / `A`)
+
+`a` (or `A`) opens a chat panel on the right (the dashboard re-tiles into the
+remaining width); **`Esc` closes it**. It keeps the **full conversation**, knows
+the **live view** (which tag is focused, what's on the page, counts, mode) plus
+all log data, and both **answers and changes the dashboard** as you talk — so you
+watch the curves update on the left while the explanation streams on the right.
+Type and **Enter** to send; the input has a full line editor (`^W` delete word,
+`^U` clear, `^A/^E`, word motion) and a sliding window so the cursor never runs
+off-screen. **`↑/↓`** (and `PgUp/PgDn`) **scroll the transcript**; `^P`/`^N`
+recall previous messages; **`^F`** toggles **full-screen chat** ↔ split (or
+`/full` · `/split`); answers render light markdown. Manage **multiple sessions**
+with slash commands — `/new`, `/next`, `/prev`, `/delete`, `/rename <name>`,
+`/clear`, `/sessions`, `/full`, `/split`, `/model`, `/close` — saved per-logdir.
+
+> ⚠️ **Privacy:** queries send your **tag names and metric summaries** to the
+> chosen provider. Tag names can leak architecture details — if that matters,
+> use a **local model** (`ollama/...`) so nothing leaves your machine. The setup
+> form states this, and the feature is off until you configure it.
+
+**Audited:** we reviewed the pinned LiteLLM version (`1.88.1`) from source: your
+API key is sent **only** to the provider endpoint you configured (auth header),
+there is **no telemetry** (the flag exists but nothing reads it; all logging
+callbacks default to empty), and the one non-provider call — fetching a public
+pricing JSON from GitHub at import — is **disabled** by terminalboard
+(`LITELLM_LOCAL_MODEL_COST_MAP=true`, bundled snapshot used instead; only the
+$-estimate can lag provider price changes). The extra is **version-pinned** so
+what you install is what was audited; we re-audit before bumping the pin.
+
 ## Roadmap
 
 - [x] **Reader — `--light`**: pure-Python TFRecord + protobuf-wire parser
@@ -280,22 +378,29 @@ starts fresh, and `restore = false` in the config turns persistence off.
 - [x] **Curve z-order** (`o`), richer **filter grammar** (OR/AND/NOT/regex),
       readline editing, **help overlay** (`H`), and `Esc` to quit.
 - [x] **Default to the pure-Python parser**; `--tb` opts into tensorboard.
-- [ ] Config diff across experiments; per-tag y-axis options; config file.
+- [x] **Config diff** (`d`), **log-Y** (`l`), **x-axis step↔time** (`x`),
+      **CSV export** (`w`), and a **config file** + per-logdir view persistence.
+- [x] **More plot types**: histogram **distributions** (`b`), **PR curves**, an
+      **HParams table** (`P`), and a **type selector** (`c`).
+- [x] **AI assistant** (`a`): natural-language navigation + analysis chat
+      sidebar via LiteLLM (any provider), with a searchable model picker.
+- [ ] Assistant: pull-tools agent loop, redaction mode, `--analyze` report.
 
 ## Status
 
 Working. The text dashboard, the pure-Python parser (default) and `--tb`
 backend, multi-experiment overlay with z-order, zoom, focus + drill-down detail,
-live tag/experiment filtering, and the scalar / text / histogram-heatmap plot
-types are all functional. Test event logs are kept in the **parent working
-folder** (e.g. `../tb_logs/`), deliberately outside this repository — they're
-real training data and don't belong in a public repo.
+live tag/experiment filtering, all plot types (scalars, text, histogram
+heatmaps **and** distributions, PR curves, HParams table), and the optional
+**LLM chat assistant** are all functional. Test event logs are kept in the
+**parent working folder** (e.g. `../tb_logs/`), deliberately outside this
+repository — they're real training data and don't belong in a public repo.
 
 ## Development
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -e '.[tb,dev]'
+.venv/bin/pip install -e '.[tb,llm,dev]'   # llm = the optional chat assistant
 .venv/bin/terminalboard ../tb_logs --once
 ```
 

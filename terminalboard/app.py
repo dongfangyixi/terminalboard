@@ -173,7 +173,7 @@ class App:
         self._llm_history = []      # prior (user/assistant) turns for the 1-shot ask
         # Chat sidebar (A): a persistent, multi-session conversation on the right.
         self._chat_open = False
-        self._chat_focused = False
+        self._dash_cache = None     # (sig, lines) — dashboard reuse while typing
         self._chat_sessions = [{"name": "chat 1", "messages": []}]
         self._chat_active = 0
         self._chat_input = []       # current input buffer (chars)
@@ -341,11 +341,14 @@ class App:
         )
 
     def _footer(self) -> str:
+        if self._chat_open:                 # the chat pane has the keyboard
+            return ("\033[2m🤖 chat on the right — type & Enter · Esc closes it "
+                    "· /help for commands\033[0m")
         per_page = self.rows * self.cols
         return (
             "\033[2m[arrows]focus [Enter]inspect [n/p]page [f/t]ilter "
             f"[c]type [z/Z]zoom({per_page}) [o]rder [b]dist [+/-/0]smooth "
-            "[x]axis [l]og [w]csv [P]hparams [A]chat🤖 [H]elp [q/Esc]uit\033[0m"
+            "[x]axis [l]og [w]csv [P]hparams [a]chat🤖 [H]elp [q/Esc]uit\033[0m"
         )
 
     def _prompt_footer(self, label: str, text: str, pos: int, kind: str,
@@ -659,7 +662,8 @@ class App:
 
     def _llm_run(self, question: str, on_delta=None):
         """Build messages, call the model (streaming if ``on_delta`` given), apply
-        actions. Returns (text, applied, usage). UI lives in _handle_ask."""
+        actions. Returns (text, applied, usage). Kept for the unit tests; the live
+        chat uses _chat_complete."""
         cfg = self._llm_config
         msgs = _llm.build_messages(self._llm_context(), question, self._llm_history)
         tools = _llm.build_tools()
@@ -690,9 +694,9 @@ class App:
         return max(26, min(54, cols // 3))
 
     def _toggle_chat(self, screen, keys) -> None:
-        """A: open/close the chat sidebar (runs setup the first time)."""
+        """A: open the chat sidebar (close it with Esc). Runs setup the 1st time."""
         if self._chat_open:
-            self._chat_open = self._chat_focused = False
+            self._chat_open = False
             return
         if not _llm.is_available():
             self._show_text_overlay(screen, keys, "LLM assistant — not installed", [
@@ -708,23 +712,44 @@ class App:
             if not self._llm_setup(screen, keys):
                 return
         self._chat_open = True
-        self._chat_focused = True
+        self._status = ""
 
     def _chat_session(self):
         self._chat_active = max(0, min(self._chat_active, len(self._chat_sessions) - 1))
         return self._chat_sessions[self._chat_active]
 
+    def _dash_sig(self):
+        """Everything that affects the dashboard pane (so it can be cached while
+        the user just types in the chat)."""
+        total = last = 0
+        for run in self.reader.runs.values():
+            for s in run.series.values():
+                total += len(s)
+                if s.steps:
+                    last = max(last, s.steps[-1])
+        return (total, last, self._focus, self._detail_run, self._scroll,
+                self._cursor, self._textdiff, self.tag_filter, self.run_filter,
+                self._kind_filter, round(self.smooth, 3), self.rows, self.cols,
+                self._order_rot, self._detail, self._hparams, self.xaxis,
+                self.logy, self._distmode, self._status)
+
     def _compose_split(self) -> str:
-        """Render the dashboard (left, narrowed) beside the chat pane (right)."""
+        """Render the dashboard (left, narrowed) beside the chat pane (right).
+        The dashboard is cached so typing in the chat only repaints the right."""
         cols, rows = shutil.get_terminal_size((100, 30))
         chat_w = self._chat_width(cols)
         dash_w = max(24, cols - chat_w - 1)
-        self._cols_override = dash_w
-        try:
-            left = self._dashboard_frame().split("\n")
-        finally:
-            self._cols_override = None
-        left = (left + [""] * rows)[:rows]
+        dsig = (dash_w, rows) + self._dash_sig()
+        if self._dash_cache and self._dash_cache[0] == dsig:
+            left = self._dash_cache[1]
+        else:
+            self._cols_override = dash_w
+            try:
+                left = self._dashboard_frame().split("\n")
+            finally:
+                self._cols_override = None
+            left = (left + [""] * rows)[:rows]
+            self._dash_cache = (dsig, left)
         chat = self._chat_pane(chat_w, rows)
         bar = "\033[90m│\033[0m"
         out = [f"{_fit(left[r], dash_w)}{bar}{chat[r]}" for r in range(rows)]
@@ -733,60 +758,96 @@ class App:
     def _chat_pane(self, w: int, h: int):
         """The chat column as exactly ``h`` lines of visible width ``w``."""
         sess = self._chat_session()
+        scrolled = "  \033[2m↑more\033[0m" if self._chat_scroll > 0 else ""
         title = f"💬 {sess['name']} ({self._chat_active + 1}/{len(self._chat_sessions)})"
-        head = _fit("\033[1m" + title + "\033[0m", w)
+        head = _fit("\033[1;35m" + title + "\033[0m" + scrolled, w)
         rule = "\033[90m" + "─" * w + "\033[0m"
-        # transcript area height: header + rule + body + rule + input
-        body_h = max(1, h - 4)
+        body_h = max(1, h - 4)                       # head + rule + body + hint + input
         lines = self._chat_transcript(w)
-        total = len(lines)
-        # auto-scroll to the bottom unless the user has scrolled up
-        end = max(0, total - self._chat_scroll)
+        end = max(0, len(lines) - self._chat_scroll)
         start = max(0, end - body_h)
         view = lines[start:end]
         view = view + [""] * (body_h - len(view))
-        # input line
-        buf = "".join(self._chat_input)
-        if self._chat_focused:
-            if self._chat_pos < len(buf):
-                shown = (buf[:self._chat_pos] + "\033[7m" + buf[self._chat_pos]
-                         + "\033[0m" + buf[self._chat_pos + 1:])
-            else:
-                shown = buf + "\033[7m \033[0m"
-            prompt = _fit("\033[36m›\033[0m " + shown, w)
+        hint = _fit("\033[2mEnter send · /help · Esc close\033[0m", w)
+        # input line, with a sliding window so the cursor is always visible
+        plain = "".join(self._chat_input)
+        avail = max(8, w - 2)
+        s = 0
+        if len(plain) > avail:
+            s = max(0, min(self._chat_pos - avail // 2, len(plain) - avail))
+        win = plain[s:s + avail]
+        wpos = self._chat_pos - s
+        lead = "…" if s > 0 else ""
+        if wpos < len(win):
+            shown = win[:wpos] + "\033[7m" + win[wpos] + "\033[0m" + win[wpos + 1:]
         else:
-            hint = buf if buf else "\033[2mTab to type · A to close\033[0m"
-            prompt = _fit("\033[2m›\033[0m " + hint, w)
-        return [head, rule] + [_fit(x, w) for x in view] + [rule, prompt]
+            shown = win + "\033[7m \033[0m"
+        prompt = _fit("\033[1;36m›\033[0m " + lead + shown, w)
+        return [head, rule] + [_fit(x, w) for x in view] + [hint, prompt]
+
+    def _md(self, line: str) -> str:
+        """Light inline markdown: **bold** and `code`."""
+        line = re.sub(r"\*\*(.+?)\*\*", "\033[1m\\1\033[0m", line)
+        line = re.sub(r"`([^`]+)`", "\033[36m\\1\033[0m", line)
+        return line
+
+    def _chat_greeting(self, w: int):
+        out = [_fit("\033[1;35m🤖 assistant\033[0m", w), ""]
+        for ln in ("Ask about your runs — I can filter, open, compare, "
+                   "analyze, and drive the dashboard.").split("\n"):
+            for x in textwrap.wrap(ln, w):
+                out.append(_fit("\033[2m" + x + "\033[0m", w))
+        out += ["", _fit("\033[2me.g.  which run is overfitting?\033[0m", w),
+                _fit("\033[2m      show val losses, smoothed\033[0m", w),
+                _fit("\033[2m      open the pr curve and rate it\033[0m", w), ""]
+        out.append(_fit("\033[2msessions: /new /next /prev /rename /clear · "
+                        "/help\033[0m", w))
+        return out
 
     def _chat_transcript(self, w: int):
         """Wrapped, role-labeled transcript lines for the active session."""
         sess = self._chat_session()
+        if not sess["messages"] and self._chat_partial is None:
+            return self._chat_greeting(w)
         out = []
         for m in sess["messages"]:
             role = m["role"]
             if role == "user":
                 out.append(_fit("\033[1;36myou\033[0m", w))
-                body = m["content"]
+                body, md = m["content"], False
             elif role == "assistant":
                 out.append(_fit("\033[1;35m🤖\033[0m", w))
-                body = m.get("text") or m["content"]
+                body, md = (m.get("text") or m["content"]), True
             else:                                   # note (display-only)
                 for ln in textwrap.wrap(m["content"], w) or [""]:
                     out.append(_fit("\033[2m" + ln + "\033[0m", w))
                 continue
-            for para in body.split("\n"):
-                for ln in (textwrap.wrap(para, w) or [""]):
-                    out.append(_fit(ln, w))
-            applied = m.get("applied")
-            if applied:
-                out.append(_fit("\033[2m↳ " + " · ".join(applied) + "\033[0m", w))
+            out += self._render_body(body, w, md)
+            if m.get("applied"):
+                out.append(_fit("\033[2m↳ " + " · ".join(m["applied"]) + "\033[0m", w))
+            if m.get("meta"):
+                out.append(_fit("\033[2m" + m["meta"] + "\033[0m", w))
             out.append("")
         if self._chat_partial is not None:          # streaming in flight
             out.append(_fit("\033[1;35m🤖\033[0m", w))
-            for para in (self._chat_partial or "…").split("\n"):
-                for ln in (textwrap.wrap(para, w) or [""]):
-                    out.append(_fit(ln, w))
+            out += self._render_body(self._chat_partial or "…", w, md=True)
+        return out
+
+    def _render_body(self, body: str, w: int, md: bool):
+        out = []
+        for para in body.split("\n"):
+            bold = False
+            p = para
+            if md and p.lstrip().startswith("#"):           # heading
+                p, bold = p.lstrip("# ").rstrip(), True
+            elif md and p.lstrip()[:2] in ("- ", "* "):     # bullet
+                p = "• " + p.lstrip()[2:]
+            for ln in (textwrap.wrap(p, w) or [""]):
+                if md:
+                    ln = self._md(ln)
+                if bold:
+                    ln = "\033[1m" + ln + "\033[0m"
+                out.append(_fit(ln, w))
         return out
 
     def _chat_complete(self, sess, on_delta):
@@ -854,8 +915,6 @@ class App:
         _text, applied, usage = out["res"]
         elapsed = time.monotonic() - t0
         bits = []
-        if applied:
-            bits.append("✓ " + " · ".join(applied))
         us = _llm.usage_summary(usage)
         cost = _llm.estimate_cost(self._llm_config.model, usage)
         if us:
@@ -863,7 +922,9 @@ class App:
         if cost:
             bits.append(f"${cost:.4f}")
         bits.append(f"{elapsed:.1f}s")
-        self._status = "🤖 " + "  ".join(bits)
+        if sess["messages"] and sess["messages"][-1]["role"] == "assistant":
+            sess["messages"][-1]["meta"] = " · ".join(bits)   # feedback in-pane
+        self._chat_scroll = 0
 
     def _chat_command(self, text: str, screen, keys) -> None:
         """Slash commands for session management."""
@@ -900,21 +961,21 @@ class App:
         elif cmd in ("model",):
             self._llm_setup(screen, keys)
         elif cmd in ("close", "q"):
-            self._chat_open = self._chat_focused = False
+            self._chat_open = False
         elif cmd in ("sessions", "ls"):
             note("sessions: " + ", ".join(
                 f"{i+1}.{s['name']}" for i, s in enumerate(S)))
         else:
-            note("commands: /new /next /prev /delete /rename <name> /clear "
-                 "/sessions /model /close")
+            note("commands: /new  /next  /prev  /delete  /rename <name>  "
+                 "/clear  /sessions  /model  /close   (Esc also closes)")
 
     def _handle_chat_key(self, screen, keys, tok: str):
-        """Keys while the chat input is focused. Returns 'quit' on Ctrl-C/D."""
+        """Keys while the chat sidebar is open. Esc CLOSES it (never quits the
+        app). Returns 'quit' only on Ctrl-C/D."""
         if tok in ("\x03", "\x04"):
             return "quit"
-        self._status = ""
-        if tok in ("\t", "ESC"):                    # hand focus back to the grid
-            self._chat_focused = False
+        if tok == "ESC":                            # close the sidebar
+            self._chat_open = False
             return None
         if tok in ("\r", "\n"):
             text = "".join(self._chat_input).strip()
@@ -928,26 +989,41 @@ class App:
                 self._chat_dispatch(screen, keys, text)
             return None
         buf = self._chat_input
+        page = max(1, shutil.get_terminal_size((100, 30))[1] - 6)
         if tok == "LEFT":
             self._chat_pos = max(0, self._chat_pos - 1)
         elif tok == "RIGHT":
             self._chat_pos = min(len(buf), self._chat_pos + 1)
-        elif tok == "HOME":
+        elif tok in ("HOME", "\x01"):               # Home / ^A
             self._chat_pos = 0
-        elif tok == "END":
+        elif tok in ("END", "\x05"):                # End / ^E
             self._chat_pos = len(buf)
-        elif tok in ("\x7f", "\b", "\x08"):
+        elif tok in ("WORD-LEFT",):
+            self._chat_pos = _prev_word(buf, self._chat_pos)
+        elif tok in ("WORD-RIGHT",):
+            self._chat_pos = _next_word(buf, self._chat_pos)
+        elif tok in ("\x7f", "\b", "\x08"):         # backspace
             if self._chat_pos > 0:
                 del buf[self._chat_pos - 1]
                 self._chat_pos -= 1
         elif tok == "DEL":
             if self._chat_pos < len(buf):
                 del buf[self._chat_pos]
+        elif tok in ("\x17", "WORD-DEL-BACK"):      # ^W: delete word back
+            start = _prev_word(buf, self._chat_pos)
+            del buf[start:self._chat_pos]
+            self._chat_pos = start
+        elif tok == "WORD-DEL-FWD":                 # Alt-d: delete word fwd
+            del buf[self._chat_pos:_next_word(buf, self._chat_pos)]
+        elif tok == "\x15":                         # ^U: clear the line
+            buf.clear()
+            self._chat_pos = 0
+        elif tok == "\x0b":                         # ^K: kill to end
+            del buf[self._chat_pos:]
         elif tok == "PGUP":
-            self._chat_scroll += max(1, shutil.get_terminal_size((100, 30))[1] - 6)
+            self._chat_scroll += page
         elif tok == "PGDN":
-            self._chat_scroll = max(0, self._chat_scroll
-                                    - (shutil.get_terminal_size((100, 30))[1] - 6))
+            self._chat_scroll = max(0, self._chat_scroll - page)
         elif tok == "UP":                           # recall a previous message
             if self._chat_drafts and self._chat_draft_idx > 0:
                 self._chat_draft_idx -= 1
@@ -1315,7 +1391,7 @@ class App:
                 self.tag_filter, self.run_filter, self.renderer.name,
                 self._order_rot, self._detail, self.xaxis, self.logy,
                 self._distmode, self._kind_filter, self._hparams,
-                self._chat_open, self._chat_focused,
+                self._chat_open,
                 shutil.get_terminal_size((100, 30)))
 
     def _chat_sig(self):
@@ -1378,7 +1454,7 @@ class App:
                     if chunk is None:
                         break
                     for tok in self._parse_chunk(chunk):
-                        if self._chat_open and self._chat_focused:
+                        if self._chat_open:
                             if self._handle_chat_key(screen, keys, tok) == "quit":
                                 return
                         elif self._hparams:
@@ -1534,13 +1610,8 @@ class App:
         elif tok == "P":                                # HParams table mode
             self._hparams = True
             self._scroll = 0
-        elif tok == "a":                                # quick one-shot ask
-            self._handle_ask(screen, keys)
-        elif tok in ("A", "\t"):                        # chat sidebar
-            if tok == "\t" and self._chat_open:
-                self._chat_focused = True
-            else:
-                self._toggle_chat(screen, keys)
+        elif tok in ("a", "A"):                         # chat assistant
+            self._toggle_chat(screen, keys)
         elif tok in ("q", "Q", "\x03", "\x04", "ESC"):
             return True
         elif tok in ("\r", "\n"):                       # inspect focused panel
@@ -1613,14 +1684,8 @@ class App:
         if tok == "w":
             self._do_csv(screen, keys)
             return None
-        if tok == "a":                                  # ask about the open tag
-            self._handle_ask(screen, keys)
-            return None
-        if tok in ("A", "\t"):                           # chat sidebar
-            if tok == "\t" and self._chat_open:
-                self._chat_focused = True
-            else:
-                self._toggle_chat(screen, keys)
+        if tok in ("a", "A"):                           # chat about the open tag
+            self._toggle_chat(screen, keys)
             return None
         names = self._detail_runs()
         if not names:
@@ -1687,6 +1752,9 @@ class App:
         if tok in ("ESC", "P", "\r", "\n"):             # back to grid
             self._hparams = False
             self._scroll = 0
+            return None
+        if tok in ("a", "A"):                           # chat about the table
+            self._toggle_chat(screen, keys)
             return None
         page = max(1, shutil.get_terminal_size((100, 30))[1] - 4)
         if tok == "UP":
@@ -1795,16 +1863,17 @@ class App:
             row("/regex/", "regex; wrap the WHOLE filter for | or spaces"),
         ]
         L.append("")
-        L.append(hdr("Chat sidebar") + DIM + "  (A — needs the [llm] extra)" + RST)
+        L.append(hdr("Chat assistant") + DIM + "  (a / A — needs the [llm] extra)"
+                 + RST)
         L += [
-            row("A", "open / close the chat panel on the right"),
-            row("Tab", "move focus between the dashboard and the chat input"),
-            row("Esc", "(in chat) hand focus back to the dashboard"),
-            row("↑/↓", "(in chat) recall a previous message"),
-            row("PgUp/PgDn", "(in chat) scroll the transcript"),
+            row("a / A", "open the chat sidebar (Esc closes it)"),
+            row("Enter", "send the message"),
+            row("↑/↓", "recall a previous message"),
+            row("PgUp/PgDn", "scroll the transcript"),
+            row("^W/^U/^A/^E", "delete word / clear / start / end"),
         ]
-        L.append(note("the chat sees the live view (focused/visible tags, counts) "
-                      "and all log data,"))
+        L.append(note("it sees the live view (focused/visible tags, counts) and "
+                      "all log data,"))
         L.append(note("answers + drives the dashboard, and keeps multiple sessions:"))
         L.append(note("  /new /next /prev /delete /rename <n> /clear /sessions "
                       "/model /close"))
@@ -1860,103 +1929,7 @@ class App:
             if done:
                 return
 
-    # -- LLM assistant: input / setup form / result overlay -----------------
-
-    def _handle_ask(self, screen, keys) -> None:
-        """`a`: ask the LLM in natural language. Runs setup on first use."""
-        self._status = ""
-        if not _llm.is_available():
-            self._show_text_overlay(screen, keys, "LLM assistant — not installed", [
-                "The 'a' assistant needs the optional LLM extra:",
-                "",
-                "    pip install 'terminalboard[llm]'",
-                "",
-                "Then press 'a' again and pick a model + key, e.g.",
-                "  ollama/llama3   (local, no key)",
-                "  anthropic/claude-sonnet-4-6   ·   gpt-4o   (with a key)",
-            ])
-            return
-        if self._llm_config is None:
-            self._llm_config = _llm.load_config()
-        if self._llm_config is None or not self._llm_config.ok():
-            if not self._llm_setup(screen, keys):
-                return                                   # cancelled setup
-        question = self._input_prompt(screen, keys, "ask", "")
-        if not question:
-            return
-
-        out: dict = {"partial": ""}
-        lock = threading.Lock()
-
-        def on_delta(frag):
-            with lock:
-                out["partial"] += frag
-
-        def work():
-            try:
-                out["res"] = self._llm_run(question, on_delta=on_delta)
-            except Exception as e:                       # surfaced in an overlay
-                out["err"] = e
-
-        t0 = time.monotonic()
-        th = threading.Thread(target=work, daemon=True)
-        th.start()
-        frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-        i = 0
-        while th.is_alive():
-            with lock:
-                partial = out["partial"]
-            screen.draw(self._stream_frame(question, partial,
-                                           frames[i % len(frames)]), hard=True)
-            i += 1
-            chunk = keys.get(0.1)
-            if chunk and any(t == "ESC" for t in self._parse_chunk(chunk)):
-                self._status = "ask cancelled"
-                return                                   # thread is daemon; abandon
-        elapsed = time.monotonic() - t0
-        if "err" in out:
-            self._status = "LLM error"
-            self._show_text_overlay(screen, keys, "LLM error",
-                                    ["\033[1;31m" + _llm.friendly_error(out["err"])
-                                     + "\033[0m", ""] + self._wrap_overlay(str(out["err"])))
-            return
-        text, applied, usage = out["res"]
-        bits = []
-        if applied:
-            bits.append("✓ " + " · ".join(applied))
-        us = _llm.usage_summary(usage)
-        if us:
-            bits.append(us)
-        cost = _llm.estimate_cost(self._llm_config.model, usage)
-        if cost:
-            bits.append(f"${cost:.4f}")
-        bits.append(f"{elapsed:.1f}s")
-        self._status = "🤖 " + "  ".join(bits)
-        if text:
-            lines = []
-            if applied:
-                lines.append("\033[2m↳ " + " · ".join(applied) + "\033[0m")
-                lines.append("")
-            lines += self._wrap_overlay(text)
-            self._show_text_overlay(screen, keys, "🤖 " + question, lines)
-
-    def _stream_frame(self, question: str, partial: str, spin: str) -> str:
-        cols, rows = shutil.get_terminal_size((100, 30))
-        head = [f"\033[1m🤖 {question}\033[0m  \033[36m{spin}\033[0m "
-                "\033[2m(Esc cancel)\033[0m", ""]
-        body = self._wrap_overlay(partial) if partial else ["\033[2mthinking…\033[0m"]
-        body_h = max(1, rows - len(head) - 1)
-        view = body[-body_h:]                            # auto-scroll to the tail
-        foot = "\033[2m  streaming…\033[0m"
-        return self._crop("\n".join(head + view + [foot]), rows)
-
-    def _wrap_overlay(self, text: str) -> List[str]:
-        cols, _ = shutil.get_terminal_size((100, 30))
-        w = max(20, cols - 2)
-        out: List[str] = []
-        for para in text.split("\n"):
-            out.extend(textwrap.wrap(para, w) or [""])
-        return out
+    # -- text overlay (help / not-installed notices) ------------------------
 
     def _show_text_overlay(self, screen, keys, title: str, lines: List[str]) -> None:
         cols, rows = shutil.get_terminal_size((100, 30))

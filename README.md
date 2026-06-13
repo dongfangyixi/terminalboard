@@ -305,17 +305,19 @@ and time.
 Actions are a fixed, typed whitelist — the assistant can't run shell or touch
 files.
 
-### Chat sidebar (`A`)
+### Chat sidebar (`a` / `A`)
 
-`A` opens a chat panel on the right (the dashboard re-tiles into the remaining
-width). It keeps the **full conversation**, knows the **live view** (which tag is
-focused, what's on the page, counts, mode) plus all log data, and both **answers
-and changes the dashboard** as you talk — so you watch the curves update on the
-left while the explanation streams on the right. `Tab` toggles focus between the
-dashboard and the chat input; `Esc` (in chat) hands focus back; `↑/↓` recall
-previous messages; `PgUp/PgDn` scroll. Manage **multiple sessions** with slash
-commands — `/new`, `/next`, `/prev`, `/delete`, `/rename <name>`, `/clear`,
-`/sessions`, `/model`, `/close` — saved per-logdir.
+`a` (or `A`) opens a chat panel on the right (the dashboard re-tiles into the
+remaining width); **`Esc` closes it**. It keeps the **full conversation**, knows
+the **live view** (which tag is focused, what's on the page, counts, mode) plus
+all log data, and both **answers and changes the dashboard** as you talk — so you
+watch the curves update on the left while the explanation streams on the right.
+Type and **Enter** to send; the input has a full line editor (`^W` delete word,
+`^U` clear, `^A/^E`, word motion) and a sliding window so the cursor never runs
+off-screen; `↑/↓` recall previous messages; `PgUp/PgDn` scroll the transcript;
+answers render light markdown. Manage **multiple sessions** with slash commands —
+`/new`, `/next`, `/prev`, `/delete`, `/rename <name>`, `/clear`, `/sessions`,
+`/model`, `/close` — saved per-logdir.
 
 > ⚠️ **Privacy:** queries send your **tag names and metric summaries** to the
 > chosen provider. Tag names can leak architecture details — if that matters,

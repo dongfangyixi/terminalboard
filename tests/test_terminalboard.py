@@ -561,6 +561,51 @@ def test_chat_split_renders(logdir, monkeypatch):
     assert "│" in frame                                          # divider
 
 
+def test_chat_esc_closes_never_quits(logdir):
+    a = App(make_reader(str(logdir)), TextRenderer())
+    a.reader.poll()
+    a._chat_open = True
+    # Esc in the chat closes the sidebar and returns None (NOT a quit)
+    assert a._handle_chat_key(_FakeScreen(), None, "ESC") is None
+    assert a._chat_open is False
+
+
+def test_chat_input_rich_editing(logdir):
+    a = App(make_reader(str(logdir)), TextRenderer())
+    a.reader.poll()
+    a._chat_open = True
+    for c in "hello world":
+        a._handle_chat_key(_FakeScreen(), None, c)
+    a._handle_chat_key(_FakeScreen(), None, "\x17")        # ^W: delete word
+    assert "".join(a._chat_input) == "hello "
+    a._handle_chat_key(_FakeScreen(), None, "\x15")        # ^U: clear
+    assert a._chat_input == []
+
+
+def test_chat_greeting_on_empty(logdir, monkeypatch):
+    monkeypatch.setenv("COLUMNS", "120")
+    monkeypatch.setenv("LINES", "30")
+    a = App(make_reader(str(logdir)), TextRenderer())
+    a.reader.poll()
+    a._chat_open = True
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", a._build_frame())
+    assert "Ask about your runs" in plain                  # cold-start greeting
+
+
+def test_chat_dashboard_cached_while_typing(logdir, monkeypatch):
+    monkeypatch.setenv("COLUMNS", "120")
+    monkeypatch.setenv("LINES", "30")
+    a = App(make_reader(str(logdir)), TextRenderer())
+    a.reader.poll()
+    a._chat_open = True
+    a._build_frame()
+    sig1 = a._dash_cache[0]
+    a._handle_chat_key(_FakeScreen(), None, "z")           # typed, not a zoom
+    a._build_frame()
+    assert a._dash_cache[0] == sig1                        # dashboard not rebuilt
+    assert "z" in "".join(a._chat_input)
+
+
 def test_chat_sessions_and_commands(logdir):
     a = App(make_reader(str(logdir)), TextRenderer())
     a.reader.poll()

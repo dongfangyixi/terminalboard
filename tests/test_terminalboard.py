@@ -701,7 +701,9 @@ def test_model_catalog_and_picker(logdir):
     from terminalboard import llm
     cat = llm.model_catalog()
     assert ("deepseek/deepseek-v4-flash", "DeepSeek") in cat   # curated, searchable
-    assert len(cat) > 100                                       # + litellm's chat models
+    assert len(cat) >= len(llm.CURATED_MODELS)
+    if llm.is_available():       # litellm (the [llm] extra) adds its full list
+        assert len(cat) > 100
     a = App(make_reader(str(logdir)), TextRenderer())
     a.reader.poll()
     # search ranks curated picks first, cheap-first

@@ -140,6 +140,47 @@ def build_tools() -> List[dict]:
     return [{"type": "function", "function": s} for s in ACTION_SPECS]
 
 
+# Curated, current, light-first picks (these post-date litellm's frozen price map,
+# so we list them explicitly; they float to the top of the picker).
+CURATED_MODELS = [
+    ("gpt-5.4-nano", "OpenAI"),
+    ("gpt-5.4-mini", "OpenAI"),
+    ("gpt-4o-mini", "OpenAI"),
+    ("anthropic/claude-haiku-4-5", "Anthropic"),
+    ("anthropic/claude-sonnet-4-6", "Anthropic"),
+    ("gemini/gemini-3.5-flash", "Google"),
+    ("gemini/gemini-3.1-flash-lite", "Google"),
+    ("deepseek/deepseek-v4-flash", "DeepSeek"),
+    ("deepseek/deepseek-v4-pro", "DeepSeek"),
+    ("openrouter/qwen/qwen3.6-35b-a3b", "OpenRouter"),
+    ("ollama/llama3", "Ollama (local)"),
+    ("hosted_vllm/Qwen/Qwen3.6-27B", "vLLM (self-host)"),
+]
+
+_CATALOG = None
+
+
+def model_catalog():
+    """(model, provider) pairs for the picker: curated picks first, then every
+    chat model litellm knows about (for search). Cached."""
+    global _CATALOG
+    if _CATALOG is not None:
+        return _CATALOG
+    items = list(CURATED_MODELS)
+    seen = {m for m, _ in items}
+    try:
+        import litellm
+        for name, meta in sorted(litellm.model_cost.items()):
+            if meta.get("mode") != "chat" or name in seen:
+                continue
+            items.append((name, meta.get("litellm_provider", "")))
+            seen.add(name)
+    except Exception:
+        pass
+    _CATALOG = items
+    return items
+
+
 SYSTEM_PROMPT = (
     "You are an assistant embedded in terminalboard, a terminal TensorBoard "
     "viewer. You help the user navigate the dashboard and analyze their "

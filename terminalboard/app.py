@@ -1992,31 +1992,60 @@ class App:
             if done:
                 return
 
+    def _model_list(self, query: str):
+        """Picker rows for ``query``: (display, value, provider). Substring match
+        over the catalog (curated first), plus a 'use exactly' custom row."""
+        q = query.strip().lower()
+        cat = _llm.model_catalog()
+        if not q:
+            hits = cat[:9]
+        else:
+            noisy = ("azure", "bedrock", "vercel", "fireworks", "novita",
+                     "deepinfra", "sagemaker")
+            curated = {m: i for i, (m, _) in enumerate(_llm.CURATED_MODELS)}
+            matches = [(m, p) for (m, p) in cat
+                       if q in m.lower() or q in p.lower()]
+            # rank: curated picks (in our order) first, then name-prefix, then
+            # plain providers, then shortest.
+            matches.sort(key=lambda mp: (
+                0 if mp[0] in curated else 1,
+                curated.get(mp[0], 0),
+                0 if mp[0].lower().startswith(q) else 1,
+                1 if any(n in (mp[1] or "").lower() for n in noisy) else 0,
+                len(mp[0]), mp[0]))
+            hits = matches[:9]
+        rows = [(m, m, p) for (m, p) in hits]
+        qs = query.strip()
+        if qs and qs.lower() not in (m.lower() for m, _, _ in rows):
+            rows.append((f'use "{qs}" exactly', qs, "custom"))
+        return rows
+
     def _llm_setup(self, screen, keys) -> bool:
-        """Modal form: Model / API key / API base. Validates with a ping, saves on
-        success. Returns True if configured."""
+        """Modal: pick/search a Model, enter the key/base, validate, save."""
         cur = self._llm_config or _llm.LLMConfig()
         fields = [["Model", list(cur.model)],
                   ["API key", list(cur.api_key)],
                   ["API base (optional)", list(cur.api_base)]]
         fi = 0
         pos = len(fields[0][1])
-        selected = False        # whole field selected (focus or first keystroke)
+        pick = 0
+        selected = False        # whole text field selected (key/base only)
         error = ""
         testing = False
 
         def focus(new_fi):
-            # Browser-like: landing on a non-empty field selects all of it, so a
-            # keystroke / paste / Backspace replaces it instead of editing the end
-            # (important for long API keys that scroll off-screen).
-            nonlocal fi, pos, selected
+            nonlocal fi, pos, selected, pick
             fi = new_fi % len(fields)
             pos = len(fields[fi][1])
-            selected = len(fields[fi][1]) > 0
+            selected = fi != 0 and len(fields[fi][1]) > 0   # select-all key/base
+            pick = 0
 
         while True:
-            screen.draw(self._llm_setup_frame(fields, fi, pos, selected, error,
-                                              testing), hard=True)
+            lst = self._model_list("".join(fields[0][1])) if fi == 0 else []
+            if lst:
+                pick = max(0, min(pick, len(lst) - 1))
+            screen.draw(self._llm_setup_frame(fields, fi, pos, selected, pick,
+                                              lst, error, testing), hard=True)
             if testing:
                 cfg = _llm.LLMConfig("".join(fields[0][1]).strip(),
                                      "".join(fields[1][1]).strip(),
@@ -2036,11 +2065,51 @@ class App:
                 buf = fields[fi][1]
                 if tok in ("\x03", "\x04", "ESC"):
                     return False
+                if fi == 0:                             # --- model search/picker ---
+                    if tok in ("\r", "\n"):
+                        if lst:
+                            fields[0][1] = list(lst[pick][1])
+                        focus(1)
+                        break
+                    if tok == "UP":
+                        pick = max(0, pick - 1)
+                    elif tok == "DOWN":
+                        pick = min(len(lst) - 1, pick + 1) if lst else 0
+                    elif tok == "\t":
+                        focus(1)
+                    elif tok == "LEFT":
+                        pos = max(0, pos - 1)
+                    elif tok == "RIGHT":
+                        pos = min(len(buf), pos + 1)
+                    elif tok == "HOME":
+                        pos = 0
+                    elif tok == "END":
+                        pos = len(buf)
+                    elif tok in ("\x7f", "\b", "\x08"):
+                        if pos > 0:
+                            del buf[pos - 1]
+                            pos -= 1
+                        pick = 0
+                    elif tok == "DEL":
+                        if pos < len(buf):
+                            del buf[pos]
+                        pick = 0
+                    elif tok in ("\x15",):              # ^U clear search
+                        buf.clear()
+                        pos = pick = 0
+                    elif isinstance(tok, str) and tok.isprintable():
+                        for c in tok:
+                            buf.insert(pos, c)
+                            pos += 1
+                        pick = 0
+                    continue
+                # --- key / base text fields (select-all + sliding window) ---
                 if tok in ("\r", "\n"):
                     if "".join(fields[0][1]).strip():
                         testing, error = True, ""
                     else:
-                        error = "model is required"
+                        error = "pick a model first"
+                        focus(0)
                     break
                 if tok in ("DOWN", "\t"):
                     focus(fi + 1)
@@ -2056,7 +2125,7 @@ class App:
                     pos, selected = 0, False
                 elif tok == "END":
                     pos, selected = len(buf), False
-                elif tok in ("\x7f", "\b", "\x08"):     # backspace
+                elif tok in ("\x7f", "\b", "\x08"):
                     if selected:
                         buf.clear()
                         pos, selected = 0, False
@@ -2070,35 +2139,25 @@ class App:
                     elif pos < len(buf):
                         del buf[pos]
                 elif isinstance(tok, str) and tok.isprintable():
-                    if selected:                        # replace the selection
+                    if selected:
                         buf.clear()
                         pos, selected = 0, False
                     for c in tok:
                         buf.insert(pos, c)
                         pos += 1
 
-    def _llm_setup_frame(self, fields, fi, pos, selected, error, testing) -> str:
+    def _llm_setup_frame(self, fields, fi, pos, selected, pick, lst, error,
+                         testing) -> str:
         cols, rows = shutil.get_terminal_size((100, 30))
         L = ["\033[1mterminalboard — set up the LLM assistant\033[0m", ""]
-        L.append("\033[2mTip: a small/cheap model is plenty for this — it's not a "
-                 "hard task, no need to pay for a flagship (your call \033[0m^_^"
-                 "\033[2m).\033[0m")
+        L.append("\033[2mType to search models (e.g. deepseek, qwen, claude, gpt) — "
+                 "a small/cheap one is plenty \033[0m^_^")
         L.append("")
-        L.append("\033[2mModel string (· API base — blank for hosted providers):"
-                 "\033[0m")
-        L.append("\033[2m  gpt-5.4-nano  ·  gpt-5.4-mini         (OpenAI key)\033[0m")
-        L.append("\033[2m  anthropic/claude-haiku-4-5            (Anthropic key)\033[0m")
-        L.append("\033[2m  gemini/gemini-3.5-flash               (Gemini key)\033[0m")
-        L.append("\033[2m  openrouter/qwen/qwen3.6-35b-a3b       (OpenRouter key)"
-                 "\033[0m")
-        L.append("\033[2m  hosted_vllm/Qwen/Qwen3.6-27B  ·  api base = "
-                 "http://your-host:8000/v1\033[0m")
-        L.append("")
-        avail = max(12, cols - 28)              # room for the value after the label
+        avail = max(12, cols - 28)
         for idx, (label, buf) in enumerate(fields):
             plain = ("•" * len(buf)) if idx == 1 else "".join(buf)
-            if idx == fi and not testing:
-                # Slide a window so the cursor is always visible (long keys).
+            focused = idx == fi and not testing
+            if focused:
                 start = 0
                 if len(plain) > avail:
                     start = max(0, min(pos - avail // 2, len(plain) - avail))
@@ -2107,19 +2166,33 @@ class App:
                 lead = "…" if start > 0 else ""
                 trail = "…" if start + avail < len(plain) else ""
                 if selected and plain:
-                    cur = "\033[7m" + win + "\033[0m"          # whole field selected
+                    cur = "\033[7m" + win + "\033[0m"
                 elif wpos < len(win):
                     cur = win[:wpos] + "\033[7m" + win[wpos] + "\033[0m" + win[wpos + 1:]
                 else:
                     cur = win + "\033[7m \033[0m"
-                L.append(f"\033[1;36m▶\033[0m {label:<22}{lead}{cur}{trail}")
+                tag = "search" if idx == 0 else label
+                L.append(f"\033[1;36m▶\033[0m {tag:<22}{lead}{cur}{trail}")
             else:
                 shown = plain if len(plain) <= avail else plain[:avail - 1] + "…"
-                L.append(f"  {label:<22}{shown}")
+                L.append(f"  {label:<22}{shown or '—'}")
+            if idx == 0 and focused:                    # the model picker list
+                nw = max(20, min(48, cols - 22))        # name column width
+                for i, (disp, _val, prov) in enumerate(lst):
+                    name = disp if len(disp) <= nw else disp[:nw - 1] + "…"
+                    if i == pick:
+                        row = _fit(f"  ▸ {name:<{nw}}  {prov}", cols - 1)
+                        L.append("\033[7m" + row + "\033[0m")
+                    else:
+                        L.append(_fit(f"    {name:<{nw}}  \033[2m{prov}\033[0m",
+                                      cols - 1))
+                if not lst:
+                    L.append("\033[2m    (no matches — type a custom model string)"
+                             "\033[0m")
         L.append("")
         keypath = _llm.config_path().replace(os.path.expanduser("~"), "~")
-        L.append(f"\033[2m🔒 your API key is stored locally at {keypath} "
-                 "(chmod 600), used only to call your chosen provider\033[0m")
+        L.append(f"\033[2m🔒 key stored locally at {keypath} (chmod 600) · "
+                 "API base blank for hosted providers\033[0m")
         L.append("\033[2m⚠ queries send your tag names + metric summaries to "
                  "this provider\033[0m")
         if testing:
@@ -2127,6 +2200,8 @@ class App:
         elif error:
             L.append(f"\033[1;31m{error}\033[0m")
         L.append("")
-        L.append("\033[2mTab/↑↓ next field (selects it — type or paste to replace) "
-                 "· Enter test & save · Esc cancel\033[0m")
+        if fi == 0:
+            L.append("\033[2m↑/↓ pick · Enter choose · Tab → key · Esc cancel\033[0m")
+        else:
+            L.append("\033[2mTab/↑↓ field · Enter test & save · Esc cancel\033[0m")
         return self._crop("\n".join(L), rows)

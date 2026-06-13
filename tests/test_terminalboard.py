@@ -697,6 +697,46 @@ def test_chat_complete_uses_session_history_and_drives_view(logdir):
     assert seen["messages"][-1] == {"role": "user", "content": "open hparams"}
 
 
+def test_model_catalog_and_picker(logdir):
+    from terminalboard import llm
+    cat = llm.model_catalog()
+    assert ("deepseek/deepseek-v4-flash", "DeepSeek") in cat   # curated, searchable
+    assert len(cat) > 100                                       # + litellm's chat models
+    a = App(make_reader(str(logdir)), TextRenderer())
+    a.reader.poll()
+    # search ranks curated picks first, cheap-first
+    rows = a._model_list("deepseek")
+    vals = [v for _d, v, _p in rows]
+    assert vals[0] == "deepseek/deepseek-v4-flash"
+    assert "deepseek/deepseek-v4-pro" in vals
+    # empty query shows curated; non-matching query still allows a custom entry
+    assert a._model_list("")[0][1] == "gpt-5.4-nano"
+    custom = a._model_list("my/local-model")
+    assert custom[-1][1] == "my/local-model" and custom[-1][2] == "custom"
+
+
+def test_model_picker_flow_sets_model(logdir, tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    from terminalboard import llm
+    monkeypatch.setattr(llm, "is_available", lambda: True)
+    monkeypatch.setattr(llm, "validate", lambda cfg, complete=None: (True, ""))
+    a = App(make_reader(str(logdir)), TextRenderer())
+    a.reader.poll()
+
+    class _Keys:
+        def __init__(self, seq):
+            self.q = list(seq)
+
+        def get(self, _t):
+            return self.q.pop(0) if self.q else None
+
+    # type 'deepseek', Enter picks the top (v4-flash), type key, Enter saves
+    keys = _Keys(list("deepseek") + ["\r"] + list("sk-X") + ["\r"])
+    assert a._llm_setup(_FakeScreen(), keys) is True
+    assert a._llm_config.model == "deepseek/deepseek-v4-flash"
+    assert a._llm_config.api_key == "sk-X"
+
+
 def test_llm_local_cost_map_enforced():
     # importing terminalboard.llm must pre-set the offline-cost-map switch so
     # litellm never fetches the pricing JSON from GitHub (privacy: the only

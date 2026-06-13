@@ -281,15 +281,18 @@ pip install 'terminalboard[llm]'
 ```
 
 It uses **[LiteLLM](https://github.com/BerriAI/litellm)**, so **any provider
-works** — you just give a model string + the matching API key in the first-run
-setup form (press `A` to change later). A **small/cheap model is plenty** here —
-this isn't a hard task, so there's no need for a flagship (your call 🙂):
+works**. On first use a setup form lets you **search a model** (type `deepseek`,
+`qwen`, `claude`, `gpt`… → pick from the list with `↑/↓` + Enter, or type any
+custom/self-hosted string), then enter the matching API key. A **small/cheap
+model is plenty** here — this isn't a hard task, so there's no need for a
+flagship (your call 🙂). Some current light picks:
 
 | Model string | Key | API base |
 |---|---|---|
 | `gpt-5.4-nano` / `gpt-5.4-mini` | OpenAI | *(blank)* |
 | `anthropic/claude-haiku-4-5` | Anthropic | *(blank)* |
 | `gemini/gemini-3.5-flash` (or `gemini/gemini-3.1-flash-lite`) | Google | *(blank)* |
+| `deepseek/deepseek-v4-flash` | DeepSeek | *(blank)* |
 | `openrouter/qwen/qwen3.6-35b-a3b` | OpenRouter | *(blank)* |
 | `hosted_vllm/Qwen/Qwen3.6-27B` | *(your server)* | `http://host:8000/v1` |
 | `ollama/llama3` | *(none)* | *(blank — local)* |

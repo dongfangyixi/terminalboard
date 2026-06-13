@@ -17,6 +17,8 @@ answers questions, analyzes results, and **drives the dashboard for you** in
 plain English — using any provider (OpenAI, Anthropic, Gemini, DeepSeek, local
 Ollama/vLLM…) via [LiteLLM](https://github.com/BerriAI/litellm).
 
+![terminalboard demo](demo.gif)
+
 ```bash
 terminalboard path/to/tb_logs        # runs in any terminal, local or remote
 

@@ -173,6 +173,15 @@ def _get(obj, key, default=None):
 
 def _default_complete(**kwargs):
     import litellm
+    # Keep litellm from printing debug/provider banners to stdout — in the
+    # alternate-screen TUI any stray print corrupts the display. (We can't use
+    # redirect_stdout here: the call streams from a worker thread while the main
+    # thread draws to the same stdout.)
+    litellm.suppress_debug_info = True
+    try:
+        litellm.set_verbose = False
+    except Exception:
+        pass
     return litellm.completion(**kwargs)
 
 
@@ -281,11 +290,17 @@ def estimate_cost(model: str, usage) -> Optional[float]:
     if not usage:
         return None
     try:
+        import contextlib
+        import io
         import litellm
         pt = _get(usage, "prompt_tokens") or 0
         ct = _get(usage, "completion_tokens") or 0
-        pc, cc = litellm.cost_per_token(model=model, prompt_tokens=pt,
-                                        completion_tokens=ct)
+        # litellm prints provider hints to stdout/stderr for unknown models —
+        # silence it so it can't corrupt the alternate-screen TUI.
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            pc, cc = litellm.cost_per_token(model=model, prompt_tokens=pt,
+                                            completion_tokens=ct)
         return (pc or 0.0) + (cc or 0.0)
     except Exception:
         return None

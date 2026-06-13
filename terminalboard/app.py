@@ -18,7 +18,7 @@ from . import llm as _llm
 
 from .keys import KeyReader
 from .reader import BaseReader
-from .render import Renderer, grid_dims
+from .render import Renderer, grid_dims, _fit
 from .screen import Screen
 
 # Zoom ladder: (rows, cols) per page, from most-zoomed-in (1 big panel) to
@@ -170,7 +170,19 @@ class App:
         # LLM assistant (optional): config is loaded lazily on first use.
         self._llm_config = None
         self._llm_complete = None   # test hook: inject a fake completion callable
-        self._llm_history = []      # prior (user/assistant) turns for follow-ups
+        self._llm_history = []      # prior (user/assistant) turns for the 1-shot ask
+        # Chat sidebar (A): a persistent, multi-session conversation on the right.
+        self._chat_open = False
+        self._chat_focused = False
+        self._chat_sessions = [{"name": "chat 1", "messages": []}]
+        self._chat_active = 0
+        self._chat_input = []       # current input buffer (chars)
+        self._chat_pos = 0
+        self._chat_scroll = 0       # transcript lines scrolled up from the bottom
+        self._chat_partial = None   # streaming assistant text in flight (or None)
+        self._chat_drafts = []      # sent-message history (Up/Down recall)
+        self._chat_draft_idx = 0
+        self._cols_override = None   # render the dashboard at this width (split view)
         # Start at the ladder rung closest to the requested grid's panel count.
         target = max(1, rows) * max(1, cols)
         self._zoom = min(
@@ -205,6 +217,7 @@ class App:
                 "order_rot": self._order_rot, "zoom": self._zoom,
                 "focus": self._focus, "distmode": self._distmode,
                 "kind_filter": self._kind_filter,
+                "chat": self._chat_sessions, "chat_active": self._chat_active,
             }
             with open(path, "w") as f:
                 json.dump(state, f, indent=2)
@@ -245,6 +258,13 @@ class App:
             self._distmode = s["distmode"]
         if "kind_filter" not in ex and s.get("kind_filter") in _KIND_CYCLE:
             self._kind_filter = s["kind_filter"]
+        chat = s.get("chat")
+        if isinstance(chat, list) and chat and all(isinstance(c, dict) for c in chat):
+            self._chat_sessions = [{"name": str(c.get("name", "chat")),
+                                    "messages": c.get("messages", [])}
+                                   for c in chat]
+            self._chat_active = min(max(0, int(s.get("chat_active", 0))),
+                                    len(self._chat_sessions) - 1)
 
     # -- tag selection -------------------------------------------------------
 
@@ -325,7 +345,7 @@ class App:
         return (
             "\033[2m[arrows]focus [Enter]inspect [n/p]page [f/t]ilter "
             f"[c]type [z/Z]zoom({per_page}) [o]rder [b]dist [+/-/0]smooth "
-            "[x]axis [l]og [w]csv [P]hparams [a]sk🤖 [H]elp [q/Esc]uit\033[0m"
+            "[x]axis [l]og [w]csv [P]hparams [A]chat🤖 [H]elp [q/Esc]uit\033[0m"
         )
 
     def _prompt_footer(self, label: str, text: str, pos: int, kind: str,
@@ -420,12 +440,25 @@ class App:
                 i += 1
         return tokens
 
+    def _termsize(self):
+        """Terminal (cols, rows) — cols narrowed to ``_cols_override`` while the
+        dashboard is being rendered into the left pane of the chat split."""
+        cols, rows = shutil.get_terminal_size((100, 30))
+        if self._cols_override:
+            cols = self._cols_override
+        return cols, rows
+
     def _build_frame(self, prompt=None) -> str:
+        if self._chat_open and prompt is None:
+            return self._compose_split()
+        return self._dashboard_frame(prompt)
+
+    def _dashboard_frame(self, prompt=None) -> str:
         if self._hparams and prompt is None:
             return self._build_hparams_frame()
         if self._detail is not None and prompt is None:
             return self._build_detail_frame()
-        cols, rows = shutil.get_terminal_size((100, 30))
+        cols, rows = self._termsize()
         all_tags, page_tags, page, n_pages, focus_cell = self._layout()
         header = self._header(all_tags, page, n_pages)
         footer = (self._prompt_footer(*prompt) if prompt
@@ -478,7 +511,7 @@ class App:
 
     def _build_hparams_frame(self) -> str:
         from .render import hparams_table
-        cols, rows = shutil.get_terminal_size((100, 30))
+        cols, rows = self._termsize()
         hps, metrics = self._hparams_columns()
         data = self._hparams_rows(hps, metrics)
         header = (f"\033[1mterminalboard\033[0m  HParams  "
@@ -535,14 +568,26 @@ class App:
             if per:
                 scalars[t] = per
         hps, metrics = self._hparams_columns()
+        all_tags, page_tags, page, n_pages, focus_cell = self._layout()
+        mode = ("hparams" if self._hparams else
+                "detail" if self._detail else "grid")
         ctx = {
+            "view": {                       # what the user is looking at right now
+                "mode": mode,
+                "focused_tag": (page_tags[focus_cell]
+                                if page_tags and focus_cell < len(page_tags) else None),
+                "open_detail": self._detail,
+                "visible_tags": page_tags,           # the panels on this page
+                "visible_count": len(page_tags),
+                "total_matching_tags": len(all_tags),
+                "page": page + 1, "pages": n_pages,
+                "grid": f"{self.rows}x{self.cols}",
+            },
             "state": {
                 "tag_filter": self.tag_filter, "experiment_filter": self.run_filter,
                 "type": self._kind_filter or "all",
                 "smoothing": self.smooth, "xaxis": self.xaxis, "logy": self.logy,
                 "distribution": self._distmode,
-                "focused_tag": self._current_tag(),
-                "open_detail": self._detail, "hparams_open": self._hparams,
             },
             "experiments": sorted(runs)[:24],
             "tags_by_kind": tags_by_kind,
@@ -637,6 +682,291 @@ class App:
         self._llm_history.append({"role": "assistant", "content": note or "(ok)"})
         self._llm_history = self._llm_history[-8:]
         return result["text"], applied, result.get("usage")
+
+    # -- chat sidebar -------------------------------------------------------
+
+    def _chat_width(self, cols: int) -> int:
+        """Width of the right chat pane (the dashboard gets the rest)."""
+        return max(26, min(54, cols // 3))
+
+    def _toggle_chat(self, screen, keys) -> None:
+        """A: open/close the chat sidebar (runs setup the first time)."""
+        if self._chat_open:
+            self._chat_open = self._chat_focused = False
+            return
+        if not _llm.is_available():
+            self._show_text_overlay(screen, keys, "LLM assistant — not installed", [
+                "The chat assistant needs the optional LLM extra:",
+                "", "    pip install 'terminalboard[llm]'", "",
+                "Then press A again and pick a model + key (e.g. ollama/llama3,",
+                "gpt-5.4-nano, anthropic/claude-haiku-4-5).",
+            ])
+            return
+        if self._llm_config is None:
+            self._llm_config = _llm.load_config()
+        if self._llm_config is None or not self._llm_config.ok():
+            if not self._llm_setup(screen, keys):
+                return
+        self._chat_open = True
+        self._chat_focused = True
+
+    def _chat_session(self):
+        self._chat_active = max(0, min(self._chat_active, len(self._chat_sessions) - 1))
+        return self._chat_sessions[self._chat_active]
+
+    def _compose_split(self) -> str:
+        """Render the dashboard (left, narrowed) beside the chat pane (right)."""
+        cols, rows = shutil.get_terminal_size((100, 30))
+        chat_w = self._chat_width(cols)
+        dash_w = max(24, cols - chat_w - 1)
+        self._cols_override = dash_w
+        try:
+            left = self._dashboard_frame().split("\n")
+        finally:
+            self._cols_override = None
+        left = (left + [""] * rows)[:rows]
+        chat = self._chat_pane(chat_w, rows)
+        bar = "\033[90m│\033[0m"
+        out = [f"{_fit(left[r], dash_w)}{bar}{chat[r]}" for r in range(rows)]
+        return "\n".join(out)
+
+    def _chat_pane(self, w: int, h: int):
+        """The chat column as exactly ``h`` lines of visible width ``w``."""
+        sess = self._chat_session()
+        title = f"💬 {sess['name']} ({self._chat_active + 1}/{len(self._chat_sessions)})"
+        head = _fit("\033[1m" + title + "\033[0m", w)
+        rule = "\033[90m" + "─" * w + "\033[0m"
+        # transcript area height: header + rule + body + rule + input
+        body_h = max(1, h - 4)
+        lines = self._chat_transcript(w)
+        total = len(lines)
+        # auto-scroll to the bottom unless the user has scrolled up
+        end = max(0, total - self._chat_scroll)
+        start = max(0, end - body_h)
+        view = lines[start:end]
+        view = view + [""] * (body_h - len(view))
+        # input line
+        buf = "".join(self._chat_input)
+        if self._chat_focused:
+            if self._chat_pos < len(buf):
+                shown = (buf[:self._chat_pos] + "\033[7m" + buf[self._chat_pos]
+                         + "\033[0m" + buf[self._chat_pos + 1:])
+            else:
+                shown = buf + "\033[7m \033[0m"
+            prompt = _fit("\033[36m›\033[0m " + shown, w)
+        else:
+            hint = buf if buf else "\033[2mTab to type · A to close\033[0m"
+            prompt = _fit("\033[2m›\033[0m " + hint, w)
+        return [head, rule] + [_fit(x, w) for x in view] + [rule, prompt]
+
+    def _chat_transcript(self, w: int):
+        """Wrapped, role-labeled transcript lines for the active session."""
+        sess = self._chat_session()
+        out = []
+        for m in sess["messages"]:
+            role = m["role"]
+            if role == "user":
+                out.append(_fit("\033[1;36myou\033[0m", w))
+                body = m["content"]
+            elif role == "assistant":
+                out.append(_fit("\033[1;35m🤖\033[0m", w))
+                body = m.get("text") or m["content"]
+            else:                                   # note (display-only)
+                for ln in textwrap.wrap(m["content"], w) or [""]:
+                    out.append(_fit("\033[2m" + ln + "\033[0m", w))
+                continue
+            for para in body.split("\n"):
+                for ln in (textwrap.wrap(para, w) or [""]):
+                    out.append(_fit(ln, w))
+            applied = m.get("applied")
+            if applied:
+                out.append(_fit("\033[2m↳ " + " · ".join(applied) + "\033[0m", w))
+            out.append("")
+        if self._chat_partial is not None:          # streaming in flight
+            out.append(_fit("\033[1;35m🤖\033[0m", w))
+            for para in (self._chat_partial or "…").split("\n"):
+                for ln in (textwrap.wrap(para, w) or [""]):
+                    out.append(_fit(ln, w))
+        return out
+
+    def _chat_complete(self, sess, on_delta):
+        """One streamed turn for ``sess`` (its last message is the user prompt)."""
+        sys_msg = (_llm.SYSTEM_PROMPT + "\n\nCurrent dashboard context:\n"
+                   + self._llm_context())
+        history = [{"role": m["role"], "content": m["content"]}
+                   for m in sess["messages"] if m["role"] in ("user", "assistant")]
+        msgs = [{"role": "system", "content": sys_msg}] + history
+        result = _llm.ask_stream(self._llm_config, msgs, _llm.build_tools(),
+                                 complete=self._llm_complete, on_delta=on_delta)
+        applied = []
+        for nm, ar in result["tool_calls"]:
+            desc = self._llm_apply_action(nm, ar)
+            if desc:
+                applied.append(desc)
+        note = result["text"] or ""
+        if applied:
+            note = (note + "\n" if note else "") + "[did: " + "; ".join(applied) + "]"
+        sess["messages"].append({"role": "assistant", "content": note or "(ok)",
+                                 "text": result["text"], "applied": applied})
+        return result["text"], applied, result.get("usage")
+
+    def _chat_dispatch(self, screen, keys, question: str) -> None:
+        """Send a user message and stream the reply into the active session."""
+        sess = self._chat_session()
+        sess["messages"].append({"role": "user", "content": question})
+        self._chat_drafts.append(question)
+        self._chat_draft_idx = len(self._chat_drafts)
+        self._chat_scroll = 0
+        out: dict = {"partial": ""}
+        lock = threading.Lock()
+
+        def on_delta(frag):
+            with lock:
+                out["partial"] += frag
+
+        def work():
+            try:
+                out["res"] = self._chat_complete(sess, on_delta)
+            except Exception as e:
+                out["err"] = e
+
+        t0 = time.monotonic()
+        th = threading.Thread(target=work, daemon=True)
+        th.start()
+        frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+        i = 0
+        while th.is_alive():
+            with lock:
+                self._chat_partial = out["partial"] + f"  \033[36m{frames[i % 10]}\033[0m"
+            screen.draw(self._build_frame(), hard=True)
+            i += 1
+            chunk = keys.get(0.1)
+            if chunk and any(t == "ESC" for t in self._parse_chunk(chunk)):
+                break                               # stop watching (daemon finishes)
+        self._chat_partial = None
+        if "err" in out:
+            sess["messages"].append({"role": "note",
+                                     "content": "error: " + _llm.friendly_error(out["err"])})
+            return
+        if "res" not in out:                        # cancelled mid-stream
+            sess["messages"].append({"role": "note", "content": "(cancelled)"})
+            return
+        _text, applied, usage = out["res"]
+        elapsed = time.monotonic() - t0
+        bits = []
+        if applied:
+            bits.append("✓ " + " · ".join(applied))
+        us = _llm.usage_summary(usage)
+        cost = _llm.estimate_cost(self._llm_config.model, usage)
+        if us:
+            bits.append(us)
+        if cost:
+            bits.append(f"${cost:.4f}")
+        bits.append(f"{elapsed:.1f}s")
+        self._status = "🤖 " + "  ".join(bits)
+
+    def _chat_command(self, text: str, screen, keys) -> None:
+        """Slash commands for session management."""
+        parts = text[1:].split(maxsplit=1)
+        cmd = (parts[0].lower() if parts else "")
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        S = self._chat_sessions
+
+        def note(msg):
+            self._chat_session()["messages"].append({"role": "note", "content": msg})
+
+        if cmd in ("new", "n"):
+            S.append({"name": f"chat {len(S) + 1}", "messages": []})
+            self._chat_active = len(S) - 1
+            self._chat_scroll = 0
+        elif cmd in ("next",):
+            self._chat_active = (self._chat_active + 1) % len(S)
+            self._chat_scroll = 0
+        elif cmd in ("prev", "p"):
+            self._chat_active = (self._chat_active - 1) % len(S)
+            self._chat_scroll = 0
+        elif cmd in ("delete", "del"):
+            if len(S) > 1:
+                S.pop(self._chat_active)
+                self._chat_active = max(0, self._chat_active - 1)
+            else:
+                S[0]["messages"] = []
+            self._chat_scroll = 0
+        elif cmd in ("rename",) and arg:
+            self._chat_session()["name"] = arg[:24]
+        elif cmd in ("clear",):
+            self._chat_session()["messages"] = []
+            self._chat_scroll = 0
+        elif cmd in ("model",):
+            self._llm_setup(screen, keys)
+        elif cmd in ("close", "q"):
+            self._chat_open = self._chat_focused = False
+        elif cmd in ("sessions", "ls"):
+            note("sessions: " + ", ".join(
+                f"{i+1}.{s['name']}" for i, s in enumerate(S)))
+        else:
+            note("commands: /new /next /prev /delete /rename <name> /clear "
+                 "/sessions /model /close")
+
+    def _handle_chat_key(self, screen, keys, tok: str):
+        """Keys while the chat input is focused. Returns 'quit' on Ctrl-C/D."""
+        if tok in ("\x03", "\x04"):
+            return "quit"
+        self._status = ""
+        if tok in ("\t", "ESC"):                    # hand focus back to the grid
+            self._chat_focused = False
+            return None
+        if tok in ("\r", "\n"):
+            text = "".join(self._chat_input).strip()
+            self._chat_input = []
+            self._chat_pos = 0
+            if not text:
+                return None
+            if text.startswith("/"):
+                self._chat_command(text, screen, keys)
+            else:
+                self._chat_dispatch(screen, keys, text)
+            return None
+        buf = self._chat_input
+        if tok == "LEFT":
+            self._chat_pos = max(0, self._chat_pos - 1)
+        elif tok == "RIGHT":
+            self._chat_pos = min(len(buf), self._chat_pos + 1)
+        elif tok == "HOME":
+            self._chat_pos = 0
+        elif tok == "END":
+            self._chat_pos = len(buf)
+        elif tok in ("\x7f", "\b", "\x08"):
+            if self._chat_pos > 0:
+                del buf[self._chat_pos - 1]
+                self._chat_pos -= 1
+        elif tok == "DEL":
+            if self._chat_pos < len(buf):
+                del buf[self._chat_pos]
+        elif tok == "PGUP":
+            self._chat_scroll += max(1, shutil.get_terminal_size((100, 30))[1] - 6)
+        elif tok == "PGDN":
+            self._chat_scroll = max(0, self._chat_scroll
+                                    - (shutil.get_terminal_size((100, 30))[1] - 6))
+        elif tok == "UP":                           # recall a previous message
+            if self._chat_drafts and self._chat_draft_idx > 0:
+                self._chat_draft_idx -= 1
+                self._chat_input = list(self._chat_drafts[self._chat_draft_idx])
+                self._chat_pos = len(self._chat_input)
+        elif tok == "DOWN":
+            if self._chat_draft_idx < len(self._chat_drafts) - 1:
+                self._chat_draft_idx += 1
+                self._chat_input = list(self._chat_drafts[self._chat_draft_idx])
+                self._chat_pos = len(self._chat_input)
+            else:
+                self._chat_draft_idx = len(self._chat_drafts)
+                self._chat_input = []
+                self._chat_pos = 0
+        elif isinstance(tok, str) and tok.isprintable():
+            for c in tok:
+                buf.insert(self._chat_pos, c)
+                self._chat_pos += 1
+        return None
 
     @staticmethod
     def _crop(frame: str, rows: int) -> str:
@@ -775,7 +1105,7 @@ class App:
         return [n for n in sorted(runs) if self._detail in runs[n].series]
 
     def _build_detail_frame(self) -> str:
-        cols, rows = shutil.get_terminal_size((100, 30))
+        cols, rows = self._termsize()
         tag = self._detail
         runs = self._visible_runs()
         names = self._detail_runs()
@@ -985,7 +1315,14 @@ class App:
                 self.tag_filter, self.run_filter, self.renderer.name,
                 self._order_rot, self._detail, self.xaxis, self.logy,
                 self._distmode, self._kind_filter, self._hparams,
+                self._chat_open, self._chat_focused,
                 shutil.get_terminal_size((100, 30)))
+
+    def _chat_sig(self):
+        sess = self._chat_sessions[self._chat_active] if self._chat_open else None
+        return (self._chat_active, "".join(self._chat_input), self._chat_pos,
+                self._chat_scroll, len(sess["messages"]) if sess else 0,
+                len(self._chat_sessions))
 
     def _signature(self):
         """Everything that affects the frame — a change triggers a (soft or hard)
@@ -998,7 +1335,8 @@ class App:
                 if s.steps:
                     last_step = max(last_step, s.steps[-1])
         return (total, last_step, self._focus, self._detail_run, self._scroll,
-                self._cursor, self._textdiff, self._status) + self._view_sig()
+                self._cursor, self._textdiff, self._status,
+                self._chat_sig()) + self._view_sig()
 
     def render_once(self) -> None:
         self.reader.poll()
@@ -1040,7 +1378,10 @@ class App:
                     if chunk is None:
                         break
                     for tok in self._parse_chunk(chunk):
-                        if self._hparams:
+                        if self._chat_open and self._chat_focused:
+                            if self._handle_chat_key(screen, keys, tok) == "quit":
+                                return
+                        elif self._hparams:
                             if self._handle_hparams_key(screen, keys, tok) == "quit":
                                 return
                         elif self._detail is not None:
@@ -1193,14 +1534,13 @@ class App:
         elif tok == "P":                                # HParams table mode
             self._hparams = True
             self._scroll = 0
-        elif tok == "a":                                # ask the LLM assistant
+        elif tok == "a":                                # quick one-shot ask
             self._handle_ask(screen, keys)
-        elif tok == "A":                                # re-open LLM setup
-            if _llm.is_available():
-                self._llm_config = self._llm_config or _llm.load_config()
-                self._llm_setup(screen, keys)
+        elif tok in ("A", "\t"):                        # chat sidebar
+            if tok == "\t" and self._chat_open:
+                self._chat_focused = True
             else:
-                self._status = "LLM assistant needs:  pip install 'terminalboard[llm]'"
+                self._toggle_chat(screen, keys)
         elif tok in ("q", "Q", "\x03", "\x04", "ESC"):
             return True
         elif tok in ("\r", "\n"):                       # inspect focused panel
@@ -1275,6 +1615,12 @@ class App:
             return None
         if tok == "a":                                  # ask about the open tag
             self._handle_ask(screen, keys)
+            return None
+        if tok in ("A", "\t"):                           # chat sidebar
+            if tok == "\t" and self._chat_open:
+                self._chat_focused = True
+            else:
+                self._toggle_chat(screen, keys)
             return None
         names = self._detail_runs()
         if not names:
@@ -1393,8 +1739,8 @@ class App:
             row("l", "toggle log-scale Y"),
             row("w", "export focused scalar to CSV"),
             row("P", "HParams table (runs × hyperparams × metrics)"),
-            row("a", "ask the LLM (navigate + analyze in words)"),
-            row("A", "set up / change the LLM model & key"),
+            row("a", "quick one-shot ask (overlay answer)"),
+            row("A", "chat sidebar (multi-session; Tab to focus/leave)"),
             row("r", "refresh now"),
             row("q / Esc", "quit"),
         ]
@@ -1448,6 +1794,20 @@ class App:
             row("!word", "NOT  (exclude)"),
             row("/regex/", "regex; wrap the WHOLE filter for | or spaces"),
         ]
+        L.append("")
+        L.append(hdr("Chat sidebar") + DIM + "  (A — needs the [llm] extra)" + RST)
+        L += [
+            row("A", "open / close the chat panel on the right"),
+            row("Tab", "move focus between the dashboard and the chat input"),
+            row("Esc", "(in chat) hand focus back to the dashboard"),
+            row("↑/↓", "(in chat) recall a previous message"),
+            row("PgUp/PgDn", "(in chat) scroll the transcript"),
+        ]
+        L.append(note("the chat sees the live view (focused/visible tags, counts) "
+                      "and all log data,"))
+        L.append(note("answers + drives the dashboard, and keeps multiple sessions:"))
+        L.append(note("  /new /next /prev /delete /rename <n> /clear /sessions "
+                      "/model /close"))
         L.append("")
         L.append(hdr("Plot types"))
         L.append(note("scalars · text · histograms (heatmap/distribution) ·"))

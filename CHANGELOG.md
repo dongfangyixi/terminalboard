@@ -3,6 +3,14 @@
 ## Unreleased
 
 ### Added
+- **Chat sidebar** (`A`) — a persistent, **multi-session** conversation panel on
+  the right; the dashboard re-tiles into the remaining width. The chat sees the
+  **live view** (focused tag, what's visible on the page, counts, mode) plus all
+  log data, **answers and drives the dashboard** in the same turn, and streams
+  its reply into the transcript. `Tab` moves focus between the dashboard and the
+  chat input; `Esc` hands focus back. Slash commands manage sessions: `/new`,
+  `/next`, `/prev`, `/delete`, `/rename`, `/clear`, `/sessions`, `/model`,
+  `/close`. Sessions persist per-logdir.
 - **LLM assistant** (`a`) — *optional*, `pip install 'terminalboard[llm]'`.
   Ask in natural language; the model both **navigates** the dashboard (filter
   tags/experiments, pick a type, smooth, zoom, open a tag, open HParams, …) and

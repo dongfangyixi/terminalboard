@@ -261,11 +261,14 @@ logdir — so you pick up where you left off. State lives under
 CLI flags (e.g. `--tags`, `--smooth`) override the saved values; `--reset-view`
 starts fresh, and `restore = false` in the config turns persistence off.
 
-## LLM assistant (`a`) — optional
+## LLM assistant — optional
 
-Press **`a`** to ask in plain English. The model both **drives the dashboard**
-(filter tags/experiments, pick a type, smooth, zoom, open a tag, open the HParams
-table…) and **analyzes** your results — in one turn. Examples:
+Two ways to use it: **`a`** for a quick one-shot question (answer in an overlay),
+or **`A`** for a persistent **chat sidebar** on the right.
+
+The model both **drives the dashboard** (filter tags/experiments, pick a type,
+smooth, zoom, open a tag, open the HParams table…) and **analyzes** your results
+— in one turn. Examples:
 
 - *"show only validation losses, smoothed"* → applies the filter + smoothing
 - *"which run is overfitting?"* → a short comparison of train vs val gaps
@@ -301,6 +304,18 @@ you chose. Answers **stream** as they arrive; the status line shows tokens, cost
 and time.
 Actions are a fixed, typed whitelist — the assistant can't run shell or touch
 files.
+
+### Chat sidebar (`A`)
+
+`A` opens a chat panel on the right (the dashboard re-tiles into the remaining
+width). It keeps the **full conversation**, knows the **live view** (which tag is
+focused, what's on the page, counts, mode) plus all log data, and both **answers
+and changes the dashboard** as you talk — so you watch the curves update on the
+left while the explanation streams on the right. `Tab` toggles focus between the
+dashboard and the chat input; `Esc` (in chat) hands focus back; `↑/↓` recall
+previous messages; `PgUp/PgDn` scroll. Manage **multiple sessions** with slash
+commands — `/new`, `/next`, `/prev`, `/delete`, `/rename <name>`, `/clear`,
+`/sessions`, `/model`, `/close` — saved per-logdir.
 
 > ⚠️ **Privacy:** queries send your **tag names and metric summaries** to the
 > chosen provider. Tag names can leak architecture details — if that matters,

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 
 import pytest
 
@@ -458,7 +459,11 @@ def test_llm_context_is_json(logdir):
     # Phase 2: trend + focus context
     assert ctx["scalars"]["train/loss"]["run_a"]["trend"] == "down"
     assert ctx["scalars"]["train/acc"]["run_a"]["trend"] == "up"
-    assert "focused_tag" in ctx["state"]
+    # the chat must know the live view (focused/visible tags, counts)
+    assert "focused_tag" in ctx["view"]
+    assert ctx["view"]["mode"] == "grid"
+    assert ctx["view"]["visible_count"] >= 1
+    assert "train/loss" in ctx["view"]["visible_tags"]
 
 
 def test_llm_followup_memory(logdir):
@@ -537,6 +542,80 @@ def test_llm_friendly_error_and_cost():
     # cost is None when litellm is absent, else a non-negative float — never raises
     cost = llm.estimate_cost("gpt-4o", {"prompt_tokens": 1, "completion_tokens": 1})
     assert cost is None or cost >= 0
+
+
+def test_chat_split_renders(logdir, monkeypatch):
+    monkeypatch.setenv("COLUMNS", "120")
+    monkeypatch.setenv("LINES", "30")
+    a = App(make_reader(str(logdir)), TextRenderer())
+    a.reader.poll()
+    a._chat_open = True
+    a._chat_sessions[0]["messages"] = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "loss is falling", "text": "loss is falling",
+         "applied": ["tags=*loss*"]}]
+    frame = a._build_frame()
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", frame)
+    assert "chat 1" in plain and "loss is falling" in plain      # chat pane present
+    assert "train/loss" in plain                                  # dashboard present
+    assert "│" in frame                                          # divider
+
+
+def test_chat_sessions_and_commands(logdir):
+    a = App(make_reader(str(logdir)), TextRenderer())
+    a.reader.poll()
+    assert len(a._chat_sessions) == 1
+    a._chat_command("/new", _FakeScreen(), None)
+    assert len(a._chat_sessions) == 2 and a._chat_active == 1
+    a._chat_command("/rename experiments", _FakeScreen(), None)
+    assert a._chat_session()["name"] == "experiments"
+    a._chat_command("/prev", _FakeScreen(), None)
+    assert a._chat_active == 0
+    a._chat_command("/delete", _FakeScreen(), None)
+    assert len(a._chat_sessions) == 1
+
+
+def test_chat_sessions_persist(logdir, tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    a = App(make_reader(str(logdir)), TextRenderer(), restore=True)
+    a.reader.poll()
+    a._chat_sessions = [{"name": "alpha", "messages": [
+        {"role": "user", "content": "hi"}]},
+        {"name": "beta", "messages": []}]
+    a._chat_active = 1
+    a._save_view()
+    b = App(make_reader(str(logdir)), TextRenderer(), restore=True)
+    assert [s["name"] for s in b._chat_sessions] == ["alpha", "beta"]
+    assert b._chat_active == 1
+    assert b._chat_sessions[0]["messages"][0]["content"] == "hi"
+
+
+def test_chat_complete_uses_session_history_and_drives_view(logdir):
+    from terminalboard import llm
+    a = App(make_reader(str(logdir)), TextRenderer())
+    a.reader.poll()
+    a._llm_config = llm.LLMConfig("m")
+    seen = {}
+
+    def complete(**kw):                              # streaming fake (ask_stream)
+        seen["messages"] = kw["messages"]
+        return iter([
+            {"choices": [{"delta": {"content": "done"}}]},
+            {"choices": [{"delta": {"tool_calls": [
+                {"index": 0, "function": {"name": "open_hparams", "arguments": "{}"}}]}}]},
+            {"choices": [{"delta": {}}],
+             "usage": {"prompt_tokens": 1, "completion_tokens": 1}}])
+
+    a._llm_complete = complete
+    sess = a._chat_session()
+    sess["messages"].append({"role": "user", "content": "open hparams"})
+    text, applied, usage = a._chat_complete(sess, on_delta=lambda c: None)
+    assert a._hparams is True                                # drove the dashboard
+    assert sess["messages"][-1]["role"] == "assistant"
+    assert sess["messages"][-1]["applied"] == ["open hparams"]
+    # the system+history messages end with the user's prompt (no duplicate)
+    assert seen["messages"][0]["role"] == "system"
+    assert seen["messages"][-1] == {"role": "user", "content": "open hparams"}
 
 
 def test_llm_local_cost_map_enforced():

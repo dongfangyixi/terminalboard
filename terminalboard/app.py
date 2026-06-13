@@ -2004,11 +2004,22 @@ class App:
                   ["API base (optional)", list(cur.api_base)]]
         fi = 0
         pos = len(fields[0][1])
+        selected = False        # whole field selected (focus or first keystroke)
         error = ""
         testing = False
+
+        def focus(new_fi):
+            # Browser-like: landing on a non-empty field selects all of it, so a
+            # keystroke / paste / Backspace replaces it instead of editing the end
+            # (important for long API keys that scroll off-screen).
+            nonlocal fi, pos, selected
+            fi = new_fi % len(fields)
+            pos = len(fields[fi][1])
+            selected = len(fields[fi][1]) > 0
+
         while True:
-            screen.draw(self._llm_setup_frame(fields, fi, pos, error, testing),
-                        hard=True)
+            screen.draw(self._llm_setup_frame(fields, fi, pos, selected, error,
+                                              testing), hard=True)
             if testing:
                 cfg = _llm.LLMConfig("".join(fields[0][1]).strip(),
                                      "".join(fields[1][1]).strip(),
@@ -2035,32 +2046,41 @@ class App:
                         error = "model is required"
                     break
                 if tok in ("DOWN", "\t"):
-                    fi = (fi + 1) % len(fields)
-                    pos = len(fields[fi][1])
+                    focus(fi + 1)
                 elif tok == "UP":
-                    fi = (fi - 1) % len(fields)
-                    pos = len(fields[fi][1])
+                    focus(fi - 1)
                 elif tok == "LEFT":
-                    pos = max(0, pos - 1)
+                    pos = 0 if selected else max(0, pos - 1)
+                    selected = False
                 elif tok == "RIGHT":
-                    pos = min(len(buf), pos + 1)
+                    pos = len(buf) if selected else min(len(buf), pos + 1)
+                    selected = False
                 elif tok == "HOME":
-                    pos = 0
+                    pos, selected = 0, False
                 elif tok == "END":
-                    pos = len(buf)
-                elif tok in ("\x7f", "\b", "\x08"):
-                    if pos > 0:
+                    pos, selected = len(buf), False
+                elif tok in ("\x7f", "\b", "\x08"):     # backspace
+                    if selected:
+                        buf.clear()
+                        pos, selected = 0, False
+                    elif pos > 0:
                         del buf[pos - 1]
                         pos -= 1
                 elif tok == "DEL":
-                    if pos < len(buf):
+                    if selected:
+                        buf.clear()
+                        pos, selected = 0, False
+                    elif pos < len(buf):
                         del buf[pos]
                 elif isinstance(tok, str) and tok.isprintable():
+                    if selected:                        # replace the selection
+                        buf.clear()
+                        pos, selected = 0, False
                     for c in tok:
                         buf.insert(pos, c)
                         pos += 1
 
-    def _llm_setup_frame(self, fields, fi, pos, error, testing) -> str:
+    def _llm_setup_frame(self, fields, fi, pos, selected, error, testing) -> str:
         cols, rows = shutil.get_terminal_size((100, 30))
         L = ["\033[1mterminalboard — set up the LLM assistant\033[0m", ""]
         L.append("\033[2mTip: a small/cheap model is plenty for this — it's not a "
@@ -2077,15 +2097,27 @@ class App:
         L.append("\033[2m  hosted_vllm/Qwen/Qwen3.6-27B  ·  api base = "
                  "http://your-host:8000/v1\033[0m")
         L.append("")
+        avail = max(12, cols - 28)              # room for the value after the label
         for idx, (label, buf) in enumerate(fields):
-            shown = ("•" * len(buf)) if idx == 1 else "".join(buf)
+            plain = ("•" * len(buf)) if idx == 1 else "".join(buf)
             if idx == fi and not testing:
-                if pos < len(shown):
-                    cur = shown[:pos] + "\033[7m" + shown[pos] + "\033[0m" + shown[pos + 1:]
+                # Slide a window so the cursor is always visible (long keys).
+                start = 0
+                if len(plain) > avail:
+                    start = max(0, min(pos - avail // 2, len(plain) - avail))
+                win = plain[start:start + avail]
+                wpos = pos - start
+                lead = "…" if start > 0 else ""
+                trail = "…" if start + avail < len(plain) else ""
+                if selected and plain:
+                    cur = "\033[7m" + win + "\033[0m"          # whole field selected
+                elif wpos < len(win):
+                    cur = win[:wpos] + "\033[7m" + win[wpos] + "\033[0m" + win[wpos + 1:]
                 else:
-                    cur = shown + "\033[7m \033[0m"
-                L.append(f"\033[1;36m▶\033[0m {label:<22}{cur}")
+                    cur = win + "\033[7m \033[0m"
+                L.append(f"\033[1;36m▶\033[0m {label:<22}{lead}{cur}{trail}")
             else:
+                shown = plain if len(plain) <= avail else plain[:avail - 1] + "…"
                 L.append(f"  {label:<22}{shown}")
         L.append("")
         keypath = _llm.config_path().replace(os.path.expanduser("~"), "~")
@@ -2098,5 +2130,6 @@ class App:
         elif error:
             L.append(f"\033[1;31m{error}\033[0m")
         L.append("")
-        L.append("\033[2mTab/↑↓ next field · Enter test & save · Esc cancel\033[0m")
+        L.append("\033[2mTab/↑↓ next field (selects it — type or paste to replace) "
+                 "· Enter test & save · Esc cancel\033[0m")
         return self._crop("\n".join(L), rows)

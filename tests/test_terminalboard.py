@@ -570,6 +570,40 @@ def test_chat_esc_closes_never_quits(logdir):
     assert a._chat_open is False
 
 
+def test_chat_arrow_scroll(logdir):
+    a = App(make_reader(str(logdir)), TextRenderer())
+    a.reader.poll()
+    a._chat_open = True
+    a._chat_session()["messages"] = [
+        {"role": "assistant", "content": f"l{i}", "text": f"l{i}"} for i in range(40)]
+    a._build_frame()
+    assert a._chat_scroll == 0                              # starts at the bottom
+    a._handle_chat_key(_FakeScreen(), None, "UP")
+    a._handle_chat_key(_FakeScreen(), None, "UP")
+    assert a._chat_scroll == 2                              # arrows scroll up
+    a._handle_chat_key(_FakeScreen(), None, "DOWN")
+    assert a._chat_scroll == 1
+    # ^P recalls a sent message (no longer the up-arrow)
+    a._chat_drafts = ["earlier question"]
+    a._chat_draft_idx = 1
+    a._handle_chat_key(_FakeScreen(), None, "\x10")
+    assert "".join(a._chat_input) == "earlier question"
+
+
+def test_chat_full_screen_toggle(logdir, monkeypatch):
+    monkeypatch.setenv("COLUMNS", "100")
+    monkeypatch.setenv("LINES", "20")
+    a = App(make_reader(str(logdir)), TextRenderer())
+    a.reader.poll()
+    a._chat_open = True
+    assert "│" in a._build_frame()                          # split: has a divider
+    a._handle_chat_key(_FakeScreen(), None, "\x06")         # ^F -> full screen
+    assert a._chat_full is True
+    assert "│" not in a._build_frame()                      # full: no divider
+    a._chat_command("/split", _FakeScreen(), None)
+    assert a._chat_full is False
+
+
 def test_chat_input_rich_editing(logdir):
     a = App(make_reader(str(logdir)), TextRenderer())
     a.reader.poll()

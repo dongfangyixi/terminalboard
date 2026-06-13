@@ -173,6 +173,7 @@ class App:
         self._llm_history = []      # prior (user/assistant) turns for the 1-shot ask
         # Chat sidebar (A): a persistent, multi-session conversation on the right.
         self._chat_open = False
+        self._chat_full = False     # full-screen chat (hide the dashboard)
         self._dash_cache = None     # (sig, lines) — dashboard reuse while typing
         self._chat_sessions = [{"name": "chat 1", "messages": []}]
         self._chat_active = 0
@@ -735,8 +736,11 @@ class App:
 
     def _compose_split(self) -> str:
         """Render the dashboard (left, narrowed) beside the chat pane (right).
-        The dashboard is cached so typing in the chat only repaints the right."""
+        The dashboard is cached so typing in the chat only repaints the right.
+        In full-screen mode the chat takes the whole screen."""
         cols, rows = shutil.get_terminal_size((100, 30))
+        if self._chat_full:
+            return "\n".join(self._chat_pane(cols, rows))
         chat_w = self._chat_width(cols)
         dash_w = max(24, cols - chat_w - 1)
         dsig = (dash_w, rows) + self._dash_sig()
@@ -764,11 +768,18 @@ class App:
         rule = "\033[90m" + "─" * w + "\033[0m"
         body_h = max(1, h - 4)                       # head + rule + body + hint + input
         lines = self._chat_transcript(w)
+        self._chat_scroll = max(0, min(self._chat_scroll, len(lines) - body_h))
         end = max(0, len(lines) - self._chat_scroll)
         start = max(0, end - body_h)
         view = lines[start:end]
         view = view + [""] * (body_h - len(view))
-        hint = _fit("\033[2mEnter send · /help · Esc close\033[0m", w)
+        full = "split" if self._chat_full else "full"
+        if w >= 44:
+            hint = (f"\033[2mEnter send · ↑/↓ scroll · ^F {full} · Esc close · "
+                    "/help\033[0m")
+        else:
+            hint = f"\033[2m↑/↓ scroll · ^F {full} · Esc · /help\033[0m"
+        hint = _fit(hint, w)
         # input line, with a sliding window so the cursor is always visible
         plain = "".join(self._chat_input)
         avail = max(8, w - 2)
@@ -958,6 +969,10 @@ class App:
         elif cmd in ("clear",):
             self._chat_session()["messages"] = []
             self._chat_scroll = 0
+        elif cmd in ("full", "wide"):
+            self._chat_full = True
+        elif cmd in ("split", "side"):
+            self._chat_full = False
         elif cmd in ("model",):
             self._llm_setup(screen, keys)
         elif cmd in ("close", "q"):
@@ -966,8 +981,9 @@ class App:
             note("sessions: " + ", ".join(
                 f"{i+1}.{s['name']}" for i, s in enumerate(S)))
         else:
-            note("commands: /new  /next  /prev  /delete  /rename <name>  "
-                 "/clear  /sessions  /model  /close   (Esc also closes)")
+            note("commands: /new  /next  /prev  /delete  /rename <name>  /clear  "
+                 "/sessions  /full  /split  /model  /close    "
+                 "(↑/↓ scroll · ^F full · Esc close)")
 
     def _handle_chat_key(self, screen, keys, tok: str):
         """Keys while the chat sidebar is open. Esc CLOSES it (never quits the
@@ -976,6 +992,9 @@ class App:
             return "quit"
         if tok == "ESC":                            # close the sidebar
             self._chat_open = False
+            return None
+        if tok == "\x06":                           # ^F: full-screen ↔ split
+            self._chat_full = not self._chat_full
             return None
         if tok in ("\r", "\n"):
             text = "".join(self._chat_input).strip()
@@ -1020,16 +1039,20 @@ class App:
             self._chat_pos = 0
         elif tok == "\x0b":                         # ^K: kill to end
             del buf[self._chat_pos:]
+        elif tok == "UP":                           # scroll the transcript up
+            self._chat_scroll += 1
+        elif tok == "DOWN":
+            self._chat_scroll = max(0, self._chat_scroll - 1)
         elif tok == "PGUP":
             self._chat_scroll += page
         elif tok == "PGDN":
             self._chat_scroll = max(0, self._chat_scroll - page)
-        elif tok == "UP":                           # recall a previous message
+        elif tok == "\x10":                         # ^P: recall previous message
             if self._chat_drafts and self._chat_draft_idx > 0:
                 self._chat_draft_idx -= 1
                 self._chat_input = list(self._chat_drafts[self._chat_draft_idx])
                 self._chat_pos = len(self._chat_input)
-        elif tok == "DOWN":
+        elif tok == "\x0e":                         # ^N: next message / clear
             if self._chat_draft_idx < len(self._chat_drafts) - 1:
                 self._chat_draft_idx += 1
                 self._chat_input = list(self._chat_drafts[self._chat_draft_idx])
@@ -1391,7 +1414,7 @@ class App:
                 self.tag_filter, self.run_filter, self.renderer.name,
                 self._order_rot, self._detail, self.xaxis, self.logy,
                 self._distmode, self._kind_filter, self._hparams,
-                self._chat_open,
+                self._chat_open, self._chat_full,
                 shutil.get_terminal_size((100, 30)))
 
     def _chat_sig(self):
@@ -1868,8 +1891,9 @@ class App:
         L += [
             row("a / A", "open the chat sidebar (Esc closes it)"),
             row("Enter", "send the message"),
-            row("↑/↓", "recall a previous message"),
-            row("PgUp/PgDn", "scroll the transcript"),
+            row("↑/↓  PgUp/PgDn", "scroll the transcript"),
+            row("^F", "full-screen chat ↔ split (or /full · /split)"),
+            row("^P / ^N", "recall previous / next message"),
             row("^W/^U/^A/^E", "delete word / clear / start / end"),
         ]
         L.append(note("it sees the live view (focused/visible tags, counts) and "

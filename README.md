@@ -314,10 +314,11 @@ all log data, and both **answers and changes the dashboard** as you talk — so 
 watch the curves update on the left while the explanation streams on the right.
 Type and **Enter** to send; the input has a full line editor (`^W` delete word,
 `^U` clear, `^A/^E`, word motion) and a sliding window so the cursor never runs
-off-screen; `↑/↓` recall previous messages; `PgUp/PgDn` scroll the transcript;
-answers render light markdown. Manage **multiple sessions** with slash commands —
-`/new`, `/next`, `/prev`, `/delete`, `/rename <name>`, `/clear`, `/sessions`,
-`/model`, `/close` — saved per-logdir.
+off-screen. **`↑/↓`** (and `PgUp/PgDn`) **scroll the transcript**; `^P`/`^N`
+recall previous messages; **`^F`** toggles **full-screen chat** ↔ split (or
+`/full` · `/split`); answers render light markdown. Manage **multiple sessions**
+with slash commands — `/new`, `/next`, `/prev`, `/delete`, `/rename <name>`,
+`/clear`, `/sessions`, `/full`, `/split`, `/model`, `/close` — saved per-logdir.
 
 > ⚠️ **Privacy:** queries send your **tag names and metric summaries** to the
 > chosen provider. Tag names can leak architecture details — if that matters,

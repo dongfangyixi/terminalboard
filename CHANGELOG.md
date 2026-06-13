@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.5.0 — 2026-06-13
+
 ### Added
 - **Chat sidebar** (`a` / `A`) — a persistent, **multi-session** conversation
   panel on the right; the dashboard re-tiles into the remaining width and is

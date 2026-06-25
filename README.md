@@ -150,13 +150,15 @@ the grid. By type:
 | `a b` | **AND** — both must match |
 | `a \| b` , `a , b` | **OR** — either matches |
 | `* ? [ ]` | glob wildcards (`train/*loss*`) |
-| `!word` | **NOT** — exclude |
+| `!word` | **NOT** — a **global exclude** (applies to the whole filter) |
 | `/regex/` | regular expression (case-insensitive, unanchored) |
 
-It's a small glob + boolean DSL, **not** full regex: a bare word is a *substring*
-(`.` is literal). For real regex use `/.../`; if it needs `|` or spaces, make the
-**whole** filter the regex, e.g. `/^train\/(loss|lr)$/`. Filters re-apply as you
-type; a no-match keeps the current plots and shows a red warning.
+A `!word` excludes **globally** no matter where it sits, so
+`a \| b \| c !d` means *(a or b or c) and not d*. It's a small glob + boolean DSL,
+**not** full regex: a bare word is a *substring* (`.` is literal). For real regex
+use `/.../`; if it needs `|` or spaces, make the **whole** filter the regex, e.g.
+`/^train\/(loss|lr)$/`. Filters re-apply as you type; a no-match keeps the current
+plots and shows a red warning.
 
 **In any input prompt:** `←/→` move · `↑/↓` history · `Home/End` (or `^A`/`^E`) ·
 `^W` delete word · `^K` kill-to-end · `^U` clear · `Alt/Ctrl+←/→` word motion ·

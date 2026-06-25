@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.5.2 — 2026-06-13
+
+### Changed
+- **Filter `!word` is now a global exclude.** It applies to the whole filter no
+  matter which OR alternative it's written in, so
+  `a | b | c !d` means *(a or b or c) and not d* (previously the `!d` only bound
+  to its own `c` alternative). Positive OR/AND matching is unchanged; a filter of
+  only excludes still keeps everything else.
+
 ## 0.5.1 — 2026-06-13
 
 ### Fixed

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.5.1 — 2026-06-13
+
+### Fixed
+- **Startup crash** (`KeyError: 'kind_filter'`) when restoring a per-logdir view
+  state written by an older version (pre-0.4, before the type selector existed):
+  `None` is a valid `kind_filter` *and* a member of the cycle, so an absent key
+  slipped past the guard. Now the key's presence is checked explicitly, and the
+  whole state-apply step is wrapped so a stale/foreign state file can never crash
+  startup. Workaround on older builds: `--reset-view` or delete
+  `~/.local/state/terminalboard/views/*.json`.
+
 ## 0.5.0 — 2026-06-13
 
 ### Added

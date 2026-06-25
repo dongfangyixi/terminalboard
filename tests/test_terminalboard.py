@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 
 import pytest
@@ -378,6 +379,21 @@ def test_view_state_persists(logdir, tmp_path, monkeypatch):
             tag_filter="other", restore_exclude={"tag_filter"})
     assert c.tag_filter == "other"
     assert c.smooth == 0.85                       # still restored
+
+
+def test_load_view_tolerates_old_state_file(logdir, tmp_path, monkeypatch):
+    # a state file written by an older version (pre-kind_filter / pre-chat) must
+    # load without crashing — regression for KeyError: 'kind_filter'.
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    a = App(make_reader(str(logdir)), TextRenderer(), restore=True)
+    p = a._view_state_file()
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p, "w") as f:                        # old schema: no kind_filter
+        json.dump({"tag_filter": "train/loss", "smooth": 0.7, "zoom": 1}, f)
+    b = App(make_reader(str(logdir)), TextRenderer(), restore=True)  # must not raise
+    assert b.tag_filter == "train/loss"
+    assert b.smooth == 0.7
+    assert b._kind_filter is None                  # absent key → default (all)
 
 
 # -- LLM assistant -----------------------------------------------------------

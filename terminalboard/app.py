@@ -237,35 +237,41 @@ class App:
         if not isinstance(s, dict):
             return
         ex = set(exclude)
-        if "tag_filter" not in ex and "tag_filter" in s:
-            self.tag_filter = s["tag_filter"] or None
-        if "run_filter" not in ex and "run_filter" in s:
-            self.run_filter = s["run_filter"] or None
-        if "smooth" not in ex and isinstance(s.get("smooth"), (int, float)):
-            self.smooth = max(0.0, min(0.99, float(s["smooth"])))
-        if "xaxis" not in ex and s.get("xaxis") in ("step", "time"):
-            self.xaxis = s["xaxis"]
-        if "logy" not in ex and isinstance(s.get("logy"), bool):
-            self.logy = s["logy"]
-        if "order_rot" not in ex and isinstance(s.get("order_rot"), int):
-            self._order_rot = s["order_rot"]
-        if ("zoom" not in ex and isinstance(s.get("zoom"), int)
-                and 0 <= s["zoom"] < len(_ZOOM_LADDER)):
-            self._zoom = s["zoom"]
-            self.rows, self.cols = _ZOOM_LADDER[self._zoom]
-        if "focus" not in ex and isinstance(s.get("focus"), int):
-            self._focus = max(0, s["focus"])
-        if "distmode" not in ex and isinstance(s.get("distmode"), bool):
-            self._distmode = s["distmode"]
-        if "kind_filter" not in ex and s.get("kind_filter") in _KIND_CYCLE:
-            self._kind_filter = s["kind_filter"]
-        chat = s.get("chat")
-        if isinstance(chat, list) and chat and all(isinstance(c, dict) for c in chat):
-            self._chat_sessions = [{"name": str(c.get("name", "chat")),
-                                    "messages": c.get("messages", [])}
-                                   for c in chat]
-            self._chat_active = min(max(0, int(s.get("chat_active", 0))),
-                                    len(self._chat_sessions) - 1)
+        try:                        # an old/foreign state file must never crash us
+            if "tag_filter" not in ex and "tag_filter" in s:
+                self.tag_filter = s["tag_filter"] or None
+            if "run_filter" not in ex and "run_filter" in s:
+                self.run_filter = s["run_filter"] or None
+            if "smooth" not in ex and isinstance(s.get("smooth"), (int, float)):
+                self.smooth = max(0.0, min(0.99, float(s["smooth"])))
+            if "xaxis" not in ex and s.get("xaxis") in ("step", "time"):
+                self.xaxis = s["xaxis"]
+            if "logy" not in ex and isinstance(s.get("logy"), bool):
+                self.logy = s["logy"]
+            if "order_rot" not in ex and isinstance(s.get("order_rot"), int):
+                self._order_rot = s["order_rot"]
+            if ("zoom" not in ex and isinstance(s.get("zoom"), int)
+                    and 0 <= s["zoom"] < len(_ZOOM_LADDER)):
+                self._zoom = s["zoom"]
+                self.rows, self.cols = _ZOOM_LADDER[self._zoom]
+            if "focus" not in ex and isinstance(s.get("focus"), int):
+                self._focus = max(0, s["focus"])
+            if "distmode" not in ex and isinstance(s.get("distmode"), bool):
+                self._distmode = s["distmode"]
+            # NB: None is a valid kind_filter (= "all") AND is in _KIND_CYCLE, so
+            # an absent key must be checked explicitly — don't rely on .get().
+            if ("kind_filter" not in ex and "kind_filter" in s
+                    and s["kind_filter"] in _KIND_CYCLE):
+                self._kind_filter = s["kind_filter"]
+            chat = s.get("chat")
+            if isinstance(chat, list) and chat and all(isinstance(c, dict) for c in chat):
+                self._chat_sessions = [{"name": str(c.get("name", "chat")),
+                                        "messages": c.get("messages", [])}
+                                       for c in chat]
+                self._chat_active = min(max(0, int(s.get("chat_active", 0))),
+                                        len(self._chat_sessions) - 1)
+        except Exception:
+            pass
 
     # -- tag selection -------------------------------------------------------
 

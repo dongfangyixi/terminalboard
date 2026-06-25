@@ -103,6 +103,22 @@ def test_match_filter_or_and_not_regex():
     assert not match_filter("/^loss$/", "train/loss")
 
 
+def test_match_filter_global_exclude():
+    # `!x` excludes globally, no matter which OR alternative it sits in:
+    # (a or b or c) and NOT d
+    flt = "action_token_acc | visual_token_accuracy | action_refine & !by_format"
+    assert match_filter(flt, "val/action_token_acc")
+    assert match_filter(flt, "train/action_refine_loss")
+    assert not match_filter(flt, "by_format/action_refine")        # excluded
+    assert not match_filter(flt, "by_format/visual_token_accuracy")  # matched OR, still excluded
+    assert not match_filter(flt, "other/thing")                    # no positive match
+    # exclude lands in the first alternative but still applies everywhere
+    assert not match_filter("a !d | b", "b_has_d")
+    assert match_filter("a !d | b", "b_clean")
+    # only-excludes keeps everything else
+    assert match_filter("!old", "train/loss") and not match_filter("!old", "old/x")
+
+
 def test_match_filter_whole_pattern_regex():
     # a whole-pattern /.../ is real regex, so | and spaces work inside it
     assert match_filter("/(loss|lr)/", "train/lr")

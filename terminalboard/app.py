@@ -77,8 +77,11 @@ def match_filter(patterns: Optional[str], name: str) -> bool:
       ``|`` or spaces, e.g. ``/^train/(loss|lr)$/``.
     * Otherwise: ``|`` or ``,`` separate **OR** alternatives; whitespace or ``&``
       within an alternative is **AND**; a word is a case-insensitive **substring**
-      (``loss`` → ``train/loss``); ``* ? [ ]`` make it a glob; ``!word`` negates;
-      a per-word ``/regex/`` (without ``|``/spaces) is also a regex.
+      (``loss`` → ``train/loss``); ``* ? [ ]`` make it a glob; a per-word
+      ``/regex/`` (without ``|``/spaces) is also a regex.
+    * **``!word`` is a GLOBAL exclude** — it applies to the whole match no matter
+      which alternative it sits in. So ``a | b | c !d`` means *(a or b or c) and
+      not d*. A filter of only excludes (``!d``) keeps everything but ``d``.
     """
     if not patterns:
         return True
@@ -88,15 +91,25 @@ def match_filter(patterns: Optional[str], name: str) -> bool:
             return re.search(p[1:-1], name, re.IGNORECASE) is not None
         except re.error:
             return False
+    pos_groups = []      # OR over these; each is a list of AND-ed positive words
+    negatives = []       # global excludes (collected from every alternative)
     saw_term = False
     for term in re.split(r"[|,]", patterns):
         words = [w for w in re.split(r"[\s&]+", term) if w]
         if not words:
             continue
         saw_term = True
-        if all(_word_match(w, name) for w in words):
-            return True
-    return not saw_term  # all-separators filter matches everything
+        negatives.extend(w for w in words if w.startswith("!"))
+        pos = [w for w in words if not w.startswith("!")]
+        if pos:
+            pos_groups.append(pos)
+    if not saw_term:                              # all-separators → match all
+        return True
+    if not all(_word_match(w, name) for w in negatives):   # any exclude hit?
+        return False
+    if not pos_groups:                            # only excludes → keep the rest
+        return True
+    return any(all(_word_match(w, name) for w in pos) for pos in pos_groups)
 
 
 def _prev_word(buf: list, pos: int) -> int:
